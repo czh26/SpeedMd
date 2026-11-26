@@ -18,6 +18,7 @@ pulldown-cmark = { version = "0.13", default-features = false }
 emojis = "0.9"
 rfd = "0.18"
 serde = { version = "1", features = ["derive"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 # 发布版：最大化运行速度、最小化体积
 [profile.release]

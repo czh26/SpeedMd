@@ -1,0 +1,901 @@
+//! MdPad 顶层应用状态、布局与统一命令分发。
+
+use crate::commands::Command;
+use crate::document::Document;
+use crate::editor;
+use crate::keymap::Keymap;
+use crate::markdown::ParseOptions;
+use crate::settings::{Settings, SidebarTab, ViewMode};
+use crate::tabs::{self, TabAction};
+use crate::winutil;
+use eframe::egui::{self, Rect};
+use std::path::{Path, PathBuf};
+
+pub const APP_NAME: &str = "MdPad";
+const WELCOME: &str = include_str!("welcome.md");
+
+#[derive(Clone)]
+enum ConfirmAction {
+    CloseTab(u64),
+    CloseBatch(Vec<u64>),
+    Quit,
+}
+
+struct ShotRunner {
+    path: PathBuf,
+    frames: u32,
+    commands: Vec<String>,
+    ran_commands: bool,
+}
+
+pub struct MdApp {
+    docs: Vec<Document>,
+    active: usize,
+    closed_stack: Vec<PathBuf>,
+    settings: Settings,
+    keymap: Keymap,
+    title: String,
+    confirm: Option<ConfirmAction>,
+    allow_close: bool,
+    error: Option<String>,
+    editor_rect: Rect,
+    preview_rect: Rect,
+    shot: Option<ShotRunner>,
+}
+
+impl MdApp {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        crate::fonts::setup(&cc.egui_ctx);
+        egui_extras::install_image_loaders(&cc.egui_ctx);
+        cc.egui_ctx.options_mut(|o| {
+            o.zoom_with_keyboard = false;
+            o.quit_shortcuts.clear();
+        });
+
+        let shot_path = std::env::var_os("MDPAD_SCREENSHOT").map(PathBuf::from);
+        let test_cmds: Vec<String> = std::env::var("MDPAD_TEST_COMMANDS")
+            .map(|s| s.split(';').map(str::trim).filter(|c| !c.is_empty()).map(str::to_string).collect())
+            .unwrap_or_default();
+
+        let mut settings: Settings =
+            cc.storage.and_then(|s| eframe::get_value(s, eframe::APP_KEY)).unwrap_or_default();
+
+        let is_shot = shot_path.is_some();
+        if is_shot {
+            settings = Settings::default();
+            match std::env::var("MDPAD_MODE").as_deref() {
+                Ok("edit") => settings.mode = ViewMode::Edit,
+                Ok("preview") => settings.mode = ViewMode::Preview,
+                _ => {}
+            }
+            settings.sup_sub = std::env::var("MDPAD_SUPSUB").is_ok();
+            if std::env::var("MDPAD_DARK").is_ok() {
+                cc.egui_ctx.set_theme(egui::Theme::Dark);
+            } else {
+                cc.egui_ctx.set_theme(egui::Theme::Light);
+            }
+        }
+
+        settings.ui_zoom = settings.ui_zoom.clamp(0.75, 2.0);
+        cc.egui_ctx.set_zoom_factor(settings.ui_zoom);
+
+        let keymap = Keymap::from_overrides(&settings.keybindings);
+        let shot = shot_path.map(|path| ShotRunner { path, frames: 0, commands: test_cmds, ran_commands: false });
+
+        let mut app = Self {
+            docs: Vec::new(),
+            active: 0,
+            closed_stack: Vec::new(),
+            settings,
+            keymap,
+            title: String::new(),
+            confirm: None,
+            allow_close: false,
+            error: None,
+            editor_rect: Rect::NOTHING,
+            preview_rect: Rect::NOTHING,
+            shot,
+        };
+
+        let cli_args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
+        if !cli_args.is_empty() {
+            for p in cli_args {
+                app.open_file(p);
+            }
+        } else if !is_shot && app.settings.restore_tabs && !app.settings.session_paths.is_empty() {
+            let paths = app.settings.session_paths.clone();
+            let saved_active = app.settings.session_active;
+            for p in paths {
+                if p.is_file() {
+                    app.open_file_silent(p);
+                }
+            }
+            if !app.docs.is_empty() {
+                app.active = saved_active.min(app.docs.len() - 1);
+            }
+        }
+
+        if app.docs.is_empty() {
+            app.docs.push(Document::from_welcome(WELCOME));
+            app.active = 0;
+        }
+
+        if let Ok(anchor) = std::env::var("MDPAD_ANCHOR") {
+            app.docs[app.active].preview.scroll_to(anchor);
+        }
+        app
+    }
+
+    fn doc(&self) -> &Document {
+        &self.docs[self.active]
+    }
+
+    fn doc_mut(&mut self) -> &mut Document {
+        &mut self.docs[self.active]
+    }
+
+    fn idx_by_uid(&self, uid: u64) -> Option<usize> {
+        self.docs.iter().position(|d| d.uid == uid)
+    }
+
+    // ---------- 文件与标签操作 ----------
+
+    fn read_doc_from_disk(path: &Path) -> Result<Document, String> {
+        let bytes = std::fs::read(path).map_err(|e| format!("无法打开文件：{}\n{e}", path.display()))?;
+        let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&bytes);
+        let text = String::from_utf8_lossy(bytes).into_owned().replace("\r\n", "\n");
+        Ok(Document::from_file(winutil::clean_path(path), text))
+    }
+
+    fn open_file_silent(&mut self, path: PathBuf) {
+        if let Ok(doc) = Self::read_doc_from_disk(&path) {
+            self.push_or_activate_doc(doc);
+        }
+    }
+
+    pub fn open_file(&mut self, path: PathBuf) {
+        let clean = winutil::clean_path(&path);
+        if let Some(idx) = self.find_open_tab(&clean) {
+            self.active = idx;
+            return;
+        }
+        match Self::read_doc_from_disk(&clean) {
+            Ok(doc) => self.push_or_activate_doc(doc),
+            Err(msg) => self.error = Some(msg),
+        }
+    }
+
+    fn find_open_tab(&self, clean: &Path) -> Option<usize> {
+        let target = clean.to_string_lossy().to_ascii_lowercase();
+        self.docs.iter().position(|d| {
+            d.path.as_ref().is_some_and(|p| p.to_string_lossy().to_ascii_lowercase() == target)
+        })
+    }
+
+    fn push_or_activate_doc(&mut self, doc: Document) {
+        if let Some(p) = &doc.path
+            && let Some(idx) = self.find_open_tab(p)
+        {
+            self.active = idx;
+            return;
+        }
+        if !self.docs.is_empty() && self.docs[self.active].can_reuse_as_blank() {
+            self.docs[self.active] = doc;
+        } else {
+            self.docs.push(doc);
+            self.active = self.docs.len() - 1;
+        }
+    }
+
+    fn open_dialog(&mut self) {
+        let picked = rfd::FileDialog::new()
+            .add_filter("Markdown", &["md", "markdown", "mdown", "txt"])
+            .add_filter("所有文件", &["*"])
+            .pick_files();
+        if let Some(paths) = picked {
+            for p in paths {
+                self.open_file(p);
+            }
+        }
+    }
+
+    fn new_tab(&mut self) {
+        self.docs.push(Document::new_empty());
+        self.active = self.docs.len() - 1;
+    }
+
+    fn save_doc(&mut self, idx: usize) -> bool {
+        if let Some(path) = self.docs[idx].path.clone() {
+            self.write_doc(idx, path)
+        } else {
+            self.save_doc_as(idx)
+        }
+    }
+
+    fn save_doc_as(&mut self, idx: usize) -> bool {
+        let name = self.docs[idx]
+            .path
+            .as_deref()
+            .and_then(Path::file_name)
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "未命名.md".into());
+        let picked = rfd::FileDialog::new()
+            .add_filter("Markdown", &["md", "markdown"])
+            .add_filter("所有文件", &["*"])
+            .set_file_name(name)
+            .save_file();
+        match picked {
+            Some(p) => self.write_doc(idx, winutil::clean_path(&p)),
+            None => false,
+        }
+    }
+
+    fn write_doc(&mut self, idx: usize, path: PathBuf) -> bool {
+        match std::fs::write(&path, self.docs[idx].text.as_bytes()) {
+            Ok(()) => {
+                self.docs[idx].path = Some(path);
+                self.docs[idx].dirty = false;
+                self.docs[idx].is_welcome = false;
+                true
+            }
+            Err(e) => {
+                self.error = Some(format!("保存失败：{}\n{e}", path.display()));
+                false
+            }
+        }
+    }
+
+    fn request_close_tab(&mut self, idx: usize) {
+        if idx >= self.docs.len() {
+            return;
+        }
+        if self.docs[idx].dirty {
+            self.confirm = Some(ConfirmAction::CloseTab(self.docs[idx].uid));
+        } else {
+            self.force_close_idx(idx);
+        }
+    }
+
+    fn request_close_batch(&mut self, indices: Vec<usize>) {
+        let mut dirty_uids = Vec::new();
+        let mut clean_uids = Vec::new();
+        for idx in indices {
+            if let Some(d) = self.docs.get(idx) {
+                if d.dirty {
+                    dirty_uids.push(d.uid);
+                } else {
+                    clean_uids.push(d.uid);
+                }
+            }
+        }
+        for uid in clean_uids {
+            if let Some(idx) = self.idx_by_uid(uid) {
+                self.force_close_idx(idx);
+            }
+        }
+        if !dirty_uids.is_empty() {
+            self.confirm = Some(ConfirmAction::CloseBatch(dirty_uids));
+        }
+    }
+
+    fn force_close_idx(&mut self, idx: usize) {
+        if idx >= self.docs.len() {
+            return;
+        }
+        let removed = self.docs.remove(idx);
+        if let Some(p) = removed.path {
+            self.closed_stack.push(p);
+        }
+        if self.docs.is_empty() {
+            self.docs.push(Document::new_empty());
+            self.active = 0;
+        } else if self.active >= self.docs.len() {
+            self.active = self.docs.len() - 1;
+        } else if idx < self.active {
+            self.active -= 1;
+        }
+    }
+
+    fn reopen_closed_tab(&mut self) {
+        while let Some(path) = self.closed_stack.pop() {
+            if path.is_file() {
+                self.open_file(path);
+                return;
+            }
+        }
+    }
+
+    fn move_tab(&mut self, from: usize, to: usize) {
+        if from >= self.docs.len() || to >= self.docs.len() || from == to {
+            return;
+        }
+        let active_uid = self.docs[self.active].uid;
+        let doc = self.docs.remove(from);
+        self.docs.insert(to, doc);
+        if let Some(new_active) = self.idx_by_uid(active_uid) {
+            self.active = new_active;
+        }
+    }
+
+    fn request_quit(&mut self, ctx: &egui::Context) {
+        if self.docs.iter().any(|d| d.dirty) {
+            self.confirm = Some(ConfirmAction::Quit);
+        } else {
+            self.allow_close = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    // ---------- 命令分发与字号调节 ----------
+
+    fn adjust_font(&mut self, ctx: &egui::Context, delta: Option<f32>) {
+        let pointer = ctx.pointer_latest_pos();
+        let target_preview = match self.settings.mode {
+            ViewMode::Edit => false,
+            ViewMode::Preview => true,
+            ViewMode::Split => pointer.is_some_and(|p| self.preview_rect.contains(p)),
+        };
+        let size = if target_preview {
+            &mut self.settings.preview_font_size
+        } else {
+            &mut self.settings.editor_font_size
+        };
+        match delta {
+            Some(d) => *size = (*size + d).clamp(10.0, 32.0),
+            None => *size = if target_preview { 16.0 } else { 15.0 },
+        }
+    }
+
+    pub fn run_command(&mut self, ctx: &egui::Context, cmd: Command) {
+        match cmd {
+            Command::NewTab | Command::New => self.new_tab(),
+            Command::CloseTab => self.request_close_tab(self.active),
+            Command::ReopenClosedTab => self.reopen_closed_tab(),
+            Command::NextTab => {
+                if !self.docs.is_empty() {
+                    self.active = (self.active + 1) % self.docs.len();
+                }
+            }
+            Command::PrevTab => {
+                if !self.docs.is_empty() {
+                    self.active = (self.active + self.docs.len() - 1) % self.docs.len();
+                }
+            }
+            Command::Open => self.open_dialog(),
+            Command::OpenFolder => {
+                if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                    self.settings.workspace_folder = Some(winutil::clean_path(&folder));
+                    self.settings.sidebar_open = true;
+                    self.settings.sidebar_tab = SidebarTab::Files;
+                }
+            }
+            Command::Save => {
+                self.save_doc(self.active);
+            }
+            Command::SaveAs => {
+                self.save_doc_as(self.active);
+            }
+            Command::Quit => self.request_quit(ctx),
+            Command::ViewEdit => self.settings.mode = ViewMode::Edit,
+            Command::ViewSplit => self.settings.mode = ViewMode::Split,
+            Command::ViewPreview => self.settings.mode = ViewMode::Preview,
+            Command::ToggleSourceMode => {
+                let cur = self.settings.mode;
+                if cur == ViewMode::Edit {
+                    let prev = self.doc_mut().view_before_source.take().unwrap_or(ViewMode::Split);
+                    self.settings.mode = prev;
+                } else {
+                    self.doc_mut().view_before_source = Some(cur);
+                    self.settings.mode = ViewMode::Edit;
+                }
+            }
+            Command::ToggleSidebar => self.settings.sidebar_open = !self.settings.sidebar_open,
+            Command::SidebarFiles => {
+                self.settings.sidebar_open = true;
+                self.settings.sidebar_tab = SidebarTab::Files;
+            }
+            Command::SidebarArticles => {
+                self.settings.sidebar_open = true;
+                self.settings.sidebar_tab = SidebarTab::Articles;
+            }
+            Command::SidebarOutline => {
+                self.settings.sidebar_open = true;
+                self.settings.sidebar_tab = SidebarTab::Outline;
+            }
+            Command::FontBigger => self.adjust_font(ctx, Some(1.0)),
+            Command::FontSmaller => self.adjust_font(ctx, Some(-1.0)),
+            Command::FontReset => self.adjust_font(ctx, None),
+            // 后续阶段实现的命令在阶段 1 保留接口不崩溃
+            Command::ImportHtml
+            | Command::ExportHtml
+            | Command::ExportHtmlFragment
+            | Command::Find
+            | Command::Replace
+            | Command::FindNext
+            | Command::FindPrev
+            | Command::InlineCode
+            | Command::CodeBlock
+            | Command::CopyAsMarkdown
+            | Command::CopyAsHtml
+            | Command::PastePlain
+            | Command::OpenShortcuts
+            | Command::OpenSettings => {}
+        }
+    }
+
+    // ---------- 输入处理 ----------
+
+    fn handle_input(&mut self, ctx: &egui::Context) {
+        let cmds = ctx.input_mut(|i| self.keymap.match_and_consume(&mut i.events));
+        for cmd in cmds {
+            self.run_command(ctx, cmd);
+        }
+
+        // 拖放文件（支持一次拖入多个）
+        let dropped: Vec<PathBuf> = ctx.input(|i| {
+            i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect()
+        });
+        for p in dropped {
+            self.open_file(p);
+        }
+
+        // 关闭窗口时若有未保存文档，拦截并弹窗确认
+        if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close && self.docs.iter().any(|d| d.dirty) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.confirm = Some(ConfirmAction::Quit);
+        }
+    }
+
+    fn update_title(&mut self, ctx: &egui::Context) {
+        let doc = self.doc();
+        let name = doc.display_name();
+        let title = format!("{}{name} - {APP_NAME}", if doc.dirty { "● " } else { "" });
+        if title != self.title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = title;
+        }
+    }
+
+    // ---------- 界面 ----------
+
+    fn menu_btn(&self, ui: &mut egui::Ui, cmd: Command) -> bool {
+        let btn = egui::Button::new(cmd.label()).shortcut_text(self.keymap.label(cmd));
+        ui.add(btn).clicked()
+    }
+
+    fn menu_bar(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let mut pending_cmd: Option<Command> = None;
+
+        egui::MenuBar::new().ui(ui, |ui| {
+            ui.menu_button("文件", |ui| {
+                for cmd in [Command::NewTab, Command::New, Command::Open, Command::OpenFolder] {
+                    if self.menu_btn(ui, cmd) {
+                        pending_cmd = Some(cmd);
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                for cmd in [Command::Save, Command::SaveAs, Command::CloseTab, Command::ReopenClosedTab] {
+                    if self.menu_btn(ui, cmd) {
+                        pending_cmd = Some(cmd);
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                if self.menu_btn(ui, Command::Quit) {
+                    pending_cmd = Some(Command::Quit);
+                    ui.close();
+                }
+            });
+
+            ui.menu_button("视图", |ui| {
+                for cmd in [Command::ViewEdit, Command::ViewSplit, Command::ViewPreview, Command::ToggleSourceMode] {
+                    if self.menu_btn(ui, cmd) {
+                        pending_cmd = Some(cmd);
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                for cmd in [Command::NextTab, Command::PrevTab] {
+                    if self.menu_btn(ui, cmd) {
+                        pending_cmd = Some(cmd);
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                for cmd in [Command::FontBigger, Command::FontSmaller, Command::FontReset] {
+                    if self.menu_btn(ui, cmd) {
+                        pending_cmd = Some(cmd);
+                        ui.close();
+                    }
+                }
+            });
+
+            ui.menu_button("设置", |ui| {
+                ui.label(egui::RichText::new("Markdown 扩展语法").strong());
+                ui.checkbox(&mut self.settings.sup_sub, "上标 / 下标（^上标^、~下标~）")
+                    .on_hover_text("开启后单个 ~ 表示下标，删除线请使用 ~~文本~~");
+                ui.checkbox(&mut self.settings.front_matter, "预览中显示 YAML Front Matter");
+                ui.checkbox(&mut self.settings.restore_tabs, "启动时恢复上次打开的标签");
+                ui.separator();
+                ui.label(egui::RichText::new("字号与缩放").strong());
+                egui::Grid::new("font_sizes").num_columns(2).show(ui, |ui| {
+                    ui.label("编辑器");
+                    ui.add(egui::Slider::new(&mut self.settings.editor_font_size, 10.0..=32.0).step_by(1.0));
+                    ui.end_row();
+                    ui.label("预览");
+                    ui.add(egui::Slider::new(&mut self.settings.preview_font_size, 10.0..=32.0).step_by(1.0));
+                    ui.end_row();
+                    ui.label("界面缩放");
+                    if ui.add(egui::Slider::new(&mut self.settings.ui_zoom, 0.75..=2.0).step_by(0.05)).changed() {
+                        ctx.set_zoom_factor(self.settings.ui_zoom);
+                    }
+                    ui.end_row();
+                });
+                ui.weak("Ctrl + = / - / 0 可按鼠标所在面板单独调字号");
+            });
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                egui::widgets::global_theme_preference_buttons(ui);
+                ui.separator();
+                let mode = &mut self.settings.mode;
+                ui.selectable_value(mode, ViewMode::Preview, "预览");
+                ui.selectable_value(mode, ViewMode::Split, "分屏");
+                ui.selectable_value(mode, ViewMode::Edit, "编辑");
+            });
+        });
+
+        if let Some(cmd) = pending_cmd {
+            self.run_command(&ctx, cmd);
+        }
+    }
+
+    fn tab_bar(&mut self, ui: &mut egui::Ui) {
+        let Some(action) = tabs::show(ui, &self.docs, self.active) else { return };
+        match action {
+            TabAction::Select(i) => {
+                if i < self.docs.len() {
+                    self.active = i;
+                }
+            }
+            TabAction::Close(i) => self.request_close_tab(i),
+            TabAction::CloseOthers(keep) => {
+                let others: Vec<usize> = (0..self.docs.len()).filter(|&i| i != keep).collect();
+                self.request_close_batch(others);
+            }
+            TabAction::CloseRight(idx) => {
+                let right: Vec<usize> = ((idx + 1)..self.docs.len()).collect();
+                self.request_close_batch(right);
+            }
+            TabAction::NewTab => self.new_tab(),
+            TabAction::Save(i) => {
+                if i < self.docs.len() {
+                    self.save_doc(i);
+                }
+            }
+            TabAction::CopyPath(p) => ui.ctx().copy_text(p.display().to_string()),
+            TabAction::Reveal(p) => winutil::reveal_in_explorer(&p),
+            TabAction::Move { from, to } => self.move_tab(from, to),
+        }
+    }
+
+    fn status_bar(&self, ui: &mut egui::Ui) {
+        let doc = self.doc();
+        ui.horizontal(|ui| {
+            let path = doc.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "未保存的新文件".into());
+            ui.weak(path);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.weak(format!("{} 行   {} 字   {} 字符", doc.stats.lines, doc.stats.words, doc.stats.chars));
+                if doc.dirty {
+                    ui.colored_label(egui::Color32::from_rgb(0xe0, 0x9a, 0x3e), "● 未保存");
+                }
+            });
+        });
+    }
+
+    fn editor_pane(&mut self, ui: &mut egui::Ui) {
+        self.editor_rect = ui.max_rect();
+        let font_size = self.settings.editor_font_size;
+        let doc = self.doc_mut();
+        editor::show(ui, doc, font_size);
+    }
+
+    fn preview_pane(&mut self, ui: &mut egui::Ui) {
+        self.preview_rect = ui.max_rect();
+        let dark = ui.visuals().dark_mode;
+        let font_size = self.settings.preview_font_size;
+        let opts = ParseOptions { sup_sub: self.settings.sup_sub, front_matter: self.settings.front_matter };
+        let ctx = ui.ctx().clone();
+
+        let actions = {
+            let doc = self.doc_mut();
+            doc.ensure_parsed(&ctx, dark, font_size, &opts, true);
+            let base = doc.base_dir().map(Path::to_path_buf);
+            if let Some((parsed_doc, th, key)) = doc.parsed.get() {
+                doc.preview.ui(ui, doc.uid, parsed_doc, th, key, base.as_deref())
+            } else {
+                Default::default()
+            }
+        };
+
+        if let Some(off) = actions.toggle_task {
+            self.doc_mut().toggle_task(off);
+        }
+        if let Some(p) = actions.open_file {
+            self.open_file(p);
+        }
+    }
+
+    fn confirm_dialog(&mut self, ctx: &egui::Context) {
+        let Some(action) = self.confirm.clone() else { return };
+
+        match action {
+            ConfirmAction::CloseTab(uid) => {
+                let Some(idx) = self.idx_by_uid(uid) else {
+                    self.confirm = None;
+                    return;
+                };
+                let name = self.docs[idx].display_name();
+                let mut choice = None;
+                egui::Window::new("未保存的修改")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                    .show(ctx, |ui| {
+                        ui.label(format!("文档「{name}」有未保存的修改，是否保存？"));
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("保存").clicked() {
+                                choice = Some(0);
+                            }
+                            if ui.button("不保存").clicked() {
+                                choice = Some(1);
+                            }
+                            if ui.button("取消").clicked() {
+                                choice = Some(2);
+                            }
+                        });
+                    });
+                match choice {
+                    Some(0) => {
+                        self.confirm = None;
+                        if self.save_doc(idx)
+                            && let Some(cur) = self.idx_by_uid(uid)
+                        {
+                            self.force_close_idx(cur);
+                        }
+                    }
+                    Some(1) => {
+                        self.confirm = None;
+                        self.force_close_idx(idx);
+                    }
+                    Some(_) => self.confirm = None,
+                    None => {}
+                }
+            }
+            ConfirmAction::CloseBatch(uids) => {
+                let names: Vec<String> =
+                    uids.iter().filter_map(|&u| self.idx_by_uid(u).map(|i| self.docs[i].display_name())).collect();
+                if names.is_empty() {
+                    self.confirm = None;
+                    return;
+                }
+                let mut choice = None;
+                egui::Window::new("未保存的修改")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                    .show(ctx, |ui| {
+                        ui.label("以下文档有未保存的修改：");
+                        ui.add_space(4.0);
+                        for n in &names {
+                            ui.label(format!("  ● {n}"));
+                        }
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("全部保存").clicked() {
+                                choice = Some(0);
+                            }
+                            if ui.button("全部不保存").clicked() {
+                                choice = Some(1);
+                            }
+                            if ui.button("取消").clicked() {
+                                choice = Some(2);
+                            }
+                        });
+                    });
+                match choice {
+                    Some(0) => {
+                        self.confirm = None;
+                        for uid in uids {
+                            if let Some(idx) = self.idx_by_uid(uid) {
+                                if !self.save_doc(idx) {
+                                    return;
+                                }
+                                if let Some(cur) = self.idx_by_uid(uid) {
+                                    self.force_close_idx(cur);
+                                }
+                            }
+                        }
+                    }
+                    Some(1) => {
+                        self.confirm = None;
+                        for uid in uids {
+                            if let Some(idx) = self.idx_by_uid(uid) {
+                                self.force_close_idx(idx);
+                            }
+                        }
+                    }
+                    Some(_) => self.confirm = None,
+                    None => {}
+                }
+            }
+            ConfirmAction::Quit => {
+                let dirty_list: Vec<(u64, String)> =
+                    self.docs.iter().filter(|d| d.dirty).map(|d| (d.uid, d.display_name())).collect();
+                if dirty_list.is_empty() {
+                    self.confirm = None;
+                    self.allow_close = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    return;
+                }
+                let mut choice = None;
+                egui::Window::new("退出前保存")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                    .show(ctx, |ui| {
+                        ui.label("以下文档有未保存的修改，退出前是否保存？");
+                        ui.add_space(4.0);
+                        for (_, n) in &dirty_list {
+                            ui.label(format!("  ● {n}"));
+                        }
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("全部保存").clicked() {
+                                choice = Some(0);
+                            }
+                            if ui.button("全部不保存").clicked() {
+                                choice = Some(1);
+                            }
+                            if ui.button("取消").clicked() {
+                                choice = Some(2);
+                            }
+                        });
+                    });
+                match choice {
+                    Some(0) => {
+                        self.confirm = None;
+                        for (uid, _) in dirty_list {
+                            if let Some(idx) = self.idx_by_uid(uid)
+                                && !self.save_doc(idx)
+                            {
+                                return;
+                            }
+                        }
+                        self.allow_close = true;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    Some(1) => {
+                        self.confirm = None;
+                        self.allow_close = true;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    Some(_) => self.confirm = None,
+                    None => {}
+                }
+            }
+        }
+    }
+
+    fn error_dialog(&mut self, ctx: &egui::Context) {
+        let Some(msg) = self.error.clone() else { return };
+        egui::Window::new("错误")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(msg);
+                if ui.button("确定").clicked() {
+                    self.error = None;
+                }
+            });
+    }
+
+    fn self_test_screenshot(&mut self, ctx: &egui::Context) {
+        let Some(shot) = self.shot.as_mut() else { return };
+        shot.frames += 1;
+        let frames = shot.frames;
+        let commands = if !shot.ran_commands && frames == 4 {
+            shot.ran_commands = true;
+            Some(shot.commands.clone())
+        } else {
+            None
+        };
+        if frames == 20 {
+            let (path, ctx2) = (shot.path.clone(), ctx.clone());
+            ctx.request_screenshot(move |img| {
+                let [w, h] = img.size;
+                let _ = image::save_buffer(&path, img.as_raw(), w as u32, h as u32, image::ColorType::Rgba8);
+                ctx2.send_viewport_cmd(egui::ViewportCommand::Close);
+            });
+        }
+        if frames < 20 {
+            ctx.request_repaint();
+        }
+        if let Some(cmds) = commands {
+            for id in cmds {
+                if let Some(cmd) = Command::from_id(&id) {
+                    self.run_command(ctx, cmd);
+                }
+            }
+        }
+    }
+}
+
+impl eframe::App for MdApp {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
+        self.handle_input(ctx);
+        self.update_title(ctx);
+
+        // 在编辑模式下也保持 200ms 防抖后台更新解析（供后续大纲使用）
+        if self.settings.mode == ViewMode::Edit {
+            let dark = ui.visuals().dark_mode;
+            let font_size = self.settings.preview_font_size;
+            let opts = ParseOptions { sup_sub: self.settings.sup_sub, front_matter: self.settings.front_matter };
+            let doc = self.doc_mut();
+            doc.ensure_parsed(ctx, dark, font_size, &opts, false);
+        }
+
+        egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
+        egui::Panel::top("tabs").show(ui, |ui| self.tab_bar(ui));
+        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+
+        self.editor_rect = Rect::NOTHING;
+        self.preview_rect = Rect::NOTHING;
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::central_panel(&ctx.global_style()).inner_margin(0))
+            .show(ui, |ui| match self.settings.mode {
+                ViewMode::Edit => self.editor_pane(ui),
+                ViewMode::Preview => self.preview_pane(ui),
+                ViewMode::Split => {
+                    ui.columns(2, |cols| {
+                        self.editor_pane(&mut cols[0]);
+                        self.preview_pane(&mut cols[1]);
+                        let x = cols[0].max_rect().right();
+                        let y_range = cols[0].max_rect().y_range();
+                        cols[0].painter().vline(x, y_range, egui::Stroke::new(1.0, cols[0].visuals().widgets.noninteractive.bg_stroke.color));
+                    });
+                }
+            });
+
+        self.confirm_dialog(ctx);
+        self.error_dialog(ctx);
+        self.self_test_screenshot(ctx);
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        if self.shot.is_none() {
+            self.settings.keybindings = self.keymap.to_overrides();
+            if self.settings.restore_tabs {
+                let mut paths = Vec::new();
+                let mut active = 0usize;
+                for (i, d) in self.docs.iter().enumerate() {
+                    if let Some(p) = &d.path {
+                        if i == self.active {
+                            active = paths.len();
+                        }
+                        paths.push(p.clone());
+                    }
+                }
+                self.settings.session_paths = paths;
+                self.settings.session_active = active;
+            }
+            eframe::set_value(storage, eframe::APP_KEY, &self.settings);
+        }
+    }
+}

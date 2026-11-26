@@ -9,16 +9,8 @@ use eframe::egui::{
     StrokeKind, UiBuilder,
 };
 use pulldown_cmark::{Alignment, BlockQuoteKind};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-
-pub struct Options {
-    pub font_size: f32,
-    pub sup_sub: bool,
-    pub front_matter: bool,
-}
 
 #[derive(Default)]
 pub struct Actions {
@@ -29,9 +21,8 @@ pub struct Actions {
 }
 
 #[derive(Default)]
-pub struct Preview {
-    key: u64,
-    doc: Option<(Doc, Theme)>,
+pub struct PreviewState {
+    doc_key: u64,
     heights: Vec<Option<f32>>,
     heights_width: f32,
     scroll_to: Option<String>,
@@ -98,32 +89,24 @@ fn file_uri(p: &Path) -> String {
     format!("file://{}", p.to_string_lossy().replace('\\', "/"))
 }
 
-impl Preview {
+impl PreviewState {
     pub fn scroll_to(&mut self, anchor: String) {
         self.scroll_to = Some(anchor);
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, text: &str, opts: &Options, base_dir: Option<&Path>) -> Actions {
-        let dark = ui.visuals().dark_mode;
-        let mut h = DefaultHasher::new();
-        (text, dark, opts.font_size.to_bits(), opts.sup_sub, opts.front_matter).hash(&mut h);
-        let key = h.finish();
-        if key != self.key || self.doc.is_none() {
-            let th = Theme::new(dark, opts.font_size);
-            let po = markdown::ParseOptions { sup_sub: opts.sup_sub, front_matter: opts.front_matter };
-            self.doc = Some((markdown::parse(text, &th, &po), th));
-            self.key = key;
+    pub fn ui(&mut self, ui: &mut egui::Ui, uid: u64, doc: &Doc, th: &Theme, doc_key: u64, base_dir: Option<&Path>) -> Actions {
+        if self.doc_key != doc_key {
+            self.doc_key = doc_key;
             self.heights.clear();
         }
 
-        let Self { doc, heights, heights_width, scroll_to, .. } = self;
-        let (doc, th) = doc.as_ref().unwrap();
+        let Self { heights, heights_width, scroll_to, .. } = self;
         let mut actions = Actions::default();
         let mut nav: Option<String> = None;
         let force = scroll_to.is_some();
 
         egui::ScrollArea::vertical()
-            .id_salt("preview_scroll")
+            .id_salt(("preview_scroll", uid))
             .auto_shrink(false)
             .show_viewport(ui, |ui, viewport| {
                 let origin = ui.max_rect().top();
@@ -147,11 +130,12 @@ impl Preview {
                         };
                         for (i, block) in doc.blocks.iter().enumerate() {
                             let y = ui.cursor().top() - origin;
-                            if !force && let Some(h) = heights[i] {
-                                if y + h < viewport.top() - 600.0 || y > viewport.bottom() + 600.0 {
-                                    ui.allocate_space(vec2(width, h));
-                                    continue;
-                                }
+                            if !force
+                                && let Some(h) = heights[i]
+                                && (y + h < viewport.top() - 600.0 || y > viewport.bottom() + 600.0)
+                            {
+                                ui.allocate_space(vec2(width, h));
+                                continue;
                             }
                             let start = ui.cursor().top();
                             render_block(ui, block, &mut rcx, i == 0);
@@ -463,8 +447,10 @@ fn render_table(ui: &mut egui::Ui, aligns: &[Alignment], head: &[Inline], rows: 
     }
     let max_cell = (ui.available_width() * 0.6).clamp(160.0, 520.0);
 
+    type CellGalley<'a> = Option<(Arc<Galley>, &'a Rich)>;
+
     let all: Vec<&[Inline]> = std::iter::once(head).chain(rows.iter().map(Vec::as_slice)).collect();
-    let galleys: Vec<Vec<Option<(Arc<Galley>, &Rich)>>> = all
+    let galleys: Vec<Vec<CellGalley<'_>>> = all
         .iter()
         .map(|row| {
             (0..ncols)

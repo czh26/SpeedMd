@@ -186,12 +186,13 @@ pub fn percent_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            if let Some(v) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let Some(v) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(v);
+            i += 3;
+            continue;
         }
         out.push(b[i]);
         i += 1;
@@ -287,11 +288,12 @@ impl InlineBuilder {
             return;
         }
         self.plain.push_str(s);
-        if let Some(Atom::Text { s: prev, st: pst, link: plink }) = self.atoms.last_mut() {
-            if *pst == st && *plink == link {
-                prev.push_str(s);
-                return;
-            }
+        if let Some(Atom::Text { s: prev, st: pst, link: plink }) = self.atoms.last_mut()
+            && *pst == st
+            && *plink == link
+        {
+            prev.push_str(s);
+            return;
         }
         self.atoms.push(Atom::Text { s: s.to_string(), st, link });
     }
@@ -324,26 +326,25 @@ impl InlineBuilder {
                     continue;
                 }
             }
-            if c == b':' {
-                if let Some((end, emoji)) = emoji_at(t, i) {
-                    self.push_raw(&t[start..i], self.style, self.link.clone());
-                    self.push_raw(emoji, self.style, self.link.clone());
-                    i = end;
-                    start = i;
-                    continue;
-                }
+            if c == b':'
+                && let Some((end, emoji)) = emoji_at(t, i)
+            {
+                self.push_raw(&t[start..i], self.style, self.link.clone());
+                self.push_raw(emoji, self.style, self.link.clone());
+                i = end;
+                start = i;
+                continue;
             }
             if self.link.is_none()
                 && (c == b'h' || c == b'w' || c == b'H' || c == b'W')
                 && (i == 0 || !b[i - 1].is_ascii_alphanumeric())
+                && let Some((end, url)) = url_at(t, i)
             {
-                if let Some((end, url)) = url_at(t, i) {
-                    self.push_raw(&t[start..i], self.style, None);
-                    self.push_raw(&t[i..end], self.style, Some(Target::Url(url)));
-                    i = end;
-                    start = i;
-                    continue;
-                }
+                self.push_raw(&t[start..i], self.style, None);
+                self.push_raw(&t[i..end], self.style, Some(Target::Url(url)));
+                i = end;
+                start = i;
+                continue;
             }
             i += 1;
         }
@@ -928,10 +929,10 @@ impl<'t> DocParser<'t> {
             }
             TagEnd::Item => {
                 self.flush_implicit();
-                if let Some(Frame::Item(task, blocks)) = self.stack.pop() {
-                    if let Some(Frame::List(_, items)) = self.stack.last_mut() {
-                        items.push(Item { task, blocks });
-                    }
+                if let Some(Frame::Item(task, blocks)) = self.stack.pop()
+                    && let Some(Frame::List(_, items)) = self.stack.last_mut()
+                {
+                    items.push(Item { task, blocks });
                 }
             }
             TagEnd::FootnoteDefinition => {
@@ -975,11 +976,12 @@ impl<'t> DocParser<'t> {
             TagEnd::Link => self.ib().end_link(),
             TagEnd::Image => self.ib().end_image(),
             TagEnd::MetadataBlock(_) => {
-                if let Leaf::Meta(buf) = std::mem::replace(&mut self.leaf, Leaf::None) {
-                    if self.show_meta && !buf.trim().is_empty() {
-                        let job = front_matter_job(&buf, self.th);
-                        self.push_block(Block::FrontMatter(Arc::new(job)));
-                    }
+                if let Leaf::Meta(buf) = std::mem::replace(&mut self.leaf, Leaf::None)
+                    && self.show_meta
+                    && !buf.trim().is_empty()
+                {
+                    let job = front_matter_job(&buf, self.th);
+                    self.push_block(Block::FrontMatter(Arc::new(job)));
                 }
             }
             TagEnd::DefinitionList | TagEnd::DefinitionListTitle | TagEnd::DefinitionListDefinition => {}

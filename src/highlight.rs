@@ -1,4 +1,4 @@
-//! 编辑器里的轻量 Markdown 语法高亮（逐行扫描，O(n)，结果按内容哈希缓存）。
+//! 编辑器里的轻量 Markdown 语法高亮（逐行扫描，O(n)，结果按文档版本号缓存）。
 
 use eframe::egui::{text::LayoutJob, Color32, FontId, Stroke, TextFormat};
 use std::collections::hash_map::DefaultHasher;
@@ -61,12 +61,13 @@ impl Default for Highlighter {
 }
 
 impl Highlighter {
-    /// 返回高亮后的 LayoutJob；文本/主题/字号不变时直接复用缓存。
-    pub fn highlight(&mut self, text: &str, dark: bool, font: &FontId) -> LayoutJob {
+    /// 返回高亮后的 LayoutJob；版本号/主题/字号不变时直接复用缓存。
+    pub fn highlight(&mut self, version: u64, text: &str, dark: bool, font: &FontId) -> LayoutJob {
         let mut h = DefaultHasher::new();
-        text.hash(&mut h);
+        version.hash(&mut h);
         dark.hash(&mut h);
         font.size.to_bits().hash(&mut h);
+        font.family.hash(&mut h);
         let key = h.finish();
         if key != self.key {
             self.job = build(text, dark, font);
@@ -215,10 +216,10 @@ fn inline(job: &mut LayoutJob, s: &str, p: &Palette, font: &FontId, code_fmt: &T
             }
             b'*' | b'_' if b.get(i + 1) == Some(&b[i]) => {
                 let delim = &s[i..i + 2];
-                if let Some(end) = s[i + 2..].find(delim) {
-                    if end > 0 {
-                        span = Some((i + end + 4, fmt(font, p.bold)));
-                    }
+                if let Some(end) = s[i + 2..].find(delim)
+                    && end > 0
+                {
+                    span = Some((i + end + 4, fmt(font, p.bold)));
                 }
             }
             // 单个 * / _ 斜体（_ 要求左侧不是字母数字，避免 snake_case 误判）
@@ -235,18 +236,18 @@ fn inline(job: &mut LayoutJob, s: &str, p: &Palette, font: &FontId, code_fmt: &T
                 }
             }
             b'~' if b.get(i + 1) == Some(&b'~') => {
-                if let Some(end) = s[i + 2..].find("~~") {
-                    if end > 0 {
-                        let f = fmt(font, p.quote);
-                        span = Some((i + end + 4, TextFormat { strikethrough: Stroke::new(1.0, p.quote), ..f }));
-                    }
+                if let Some(end) = s[i + 2..].find("~~")
+                    && end > 0
+                {
+                    let f = fmt(font, p.quote);
+                    span = Some((i + end + 4, TextFormat { strikethrough: Stroke::new(1.0, p.quote), ..f }));
                 }
             }
             b'=' if b.get(i + 1) == Some(&b'=') => {
-                if let Some(end) = s[i + 2..].find("==") {
-                    if end > 0 {
-                        span = Some((i + end + 4, TextFormat { background: p.mark_bg, ..fmt(font, p.normal) }));
-                    }
+                if let Some(end) = s[i + 2..].find("==")
+                    && end > 0
+                {
+                    span = Some((i + end + 4, TextFormat { background: p.mark_bg, ..fmt(font, p.normal) }));
                 }
             }
             b':' => {
@@ -274,12 +275,12 @@ fn inline(job: &mut LayoutJob, s: &str, p: &Palette, font: &FontId, code_fmt: &T
             }
             b'[' | b'!' => {
                 let j = if b[i] == b'!' { i + 1 } else { i };
-                if b.get(j) == Some(&b'[') {
-                    if let Some(close) = s[j..].find("](") {
-                        let after = j + close + 2;
-                        if let Some(paren) = s[after..].find(')') {
-                            span = Some((after + paren + 1, fmt(font, p.link)));
-                        }
+                if b.get(j) == Some(&b'[')
+                    && let Some(close) = s[j..].find("](")
+                {
+                    let after = j + close + 2;
+                    if let Some(paren) = s[after..].find(')') {
+                        span = Some((after + paren + 1, fmt(font, p.link)));
                     }
                 }
             }
