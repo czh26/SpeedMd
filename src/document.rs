@@ -83,6 +83,7 @@ pub struct Document {
     pub text: String,
     pub path: Option<PathBuf>,
     pub base_dir_hint: Option<PathBuf>,
+    pub title_hint: Option<String>,
     pub dirty: bool,
     pub is_welcome: bool,
     pub version: u64,
@@ -109,6 +110,7 @@ impl Document {
             text: String::new(),
             path: None,
             base_dir_hint: None,
+            title_hint: None,
             dirty: false,
             is_welcome: false,
             version: 1,
@@ -139,6 +141,15 @@ impl Document {
         doc
     }
 
+    pub fn from_imported(title: String, text: String, base_dir: Option<PathBuf>) -> Self {
+        let mut doc = Self::new_empty();
+        doc.text = text;
+        doc.base_dir_hint = base_dir;
+        doc.title_hint = (!title.trim().is_empty()).then_some(title);
+        doc.dirty = true;
+        doc
+    }
+
     pub fn bump_version(&mut self) {
         self.version = self.version.wrapping_add(1);
         self.last_edit_at = Some(Instant::now());
@@ -150,6 +161,7 @@ impl Document {
             .as_deref()
             .and_then(Path::file_name)
             .map(|n| n.to_string_lossy().into_owned())
+            .or_else(|| self.title_hint.clone())
             .unwrap_or_else(|| "未命名".into())
     }
 

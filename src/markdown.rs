@@ -356,57 +356,27 @@ impl InlineBuilder {
         self.atoms.push(Atom::Text { s: s.to_string(), st, link });
     }
 
-    /// 处理普通文本：==高亮==、:emoji: 短码、GFM 裸链接
+    /// 处理普通文本：==高亮==、:emoji: 短码、GFM 裸链接、词内 ^上标^/~下标~
     fn process(&mut self, t: &str) {
-        let b = t.as_bytes();
-        let (mut i, mut start) = (0usize, 0usize);
-        while i < b.len() {
-            let c = b[i];
-            if c == b'=' && b.get(i + 1) == Some(&b'=') {
-                self.push_raw(&t[start..i], self.style, self.link.clone());
-                self.atoms.push(Atom::Mark);
-                i += 2;
-                start = i;
-                continue;
-            }
-            // 词内的 ^上标^ / ~下标~（pulldown-cmark 按 CommonMark 规则不处理词内的情况，如 H~2~O）
-            if self.sup_sub && (c == b'^' || (c == b'~' && b.get(i + 1) != Some(&b'~') && (i == 0 || b[i - 1] != b'~'))) {
-                let mut j = i + 1;
-                while j < b.len() && b[j] != c && !b[j].is_ascii_whitespace() {
-                    j += 1;
+        let link = self.link.clone();
+        for seg in crate::textproc::tokenize(t, self.sup_sub, link.is_none()) {
+            match seg {
+                crate::textproc::Segment::Plain(s) => self.push_raw(s, self.style, link.clone()),
+                crate::textproc::Segment::MarkToggle => self.atoms.push(Atom::Mark),
+                crate::textproc::Segment::Sup(s) => {
+                    let st = Style { sup: true, ..self.style };
+                    self.push_raw(s, st, link.clone());
                 }
-                if j < b.len() && b[j] == c && j > i + 1 && b.get(j + 1) != Some(&c) {
-                    self.push_raw(&t[start..i], self.style, self.link.clone());
-                    let st = Style { sup: c == b'^', sub: c == b'~', ..self.style };
-                    self.push_raw(&t[i + 1..j], st, self.link.clone());
-                    i = j + 1;
-                    start = i;
-                    continue;
+                crate::textproc::Segment::Sub(s) => {
+                    let st = Style { sub: true, ..self.style };
+                    self.push_raw(s, st, link.clone());
+                }
+                crate::textproc::Segment::Emoji(e) => self.push_raw(e, self.style, link.clone()),
+                crate::textproc::Segment::Autolink { text, url } => {
+                    self.push_raw(text, self.style, Some(Target::Url(url)));
                 }
             }
-            if c == b':'
-                && let Some((end, emoji)) = emoji_at(t, i)
-            {
-                self.push_raw(&t[start..i], self.style, self.link.clone());
-                self.push_raw(emoji, self.style, self.link.clone());
-                i = end;
-                start = i;
-                continue;
-            }
-            if self.link.is_none()
-                && (c == b'h' || c == b'w' || c == b'H' || c == b'W')
-                && (i == 0 || !b[i - 1].is_ascii_alphanumeric())
-                && let Some((end, url)) = url_at(t, i)
-            {
-                self.push_raw(&t[start..i], self.style, None);
-                self.push_raw(&t[i..end], self.style, Some(Target::Url(url)));
-                i = end;
-                start = i;
-                continue;
-            }
-            i += 1;
         }
-        self.push_raw(&t[start..], self.style, self.link.clone());
     }
 
     fn set(&mut self, f: impl FnOnce(&mut Style)) {
@@ -774,69 +744,6 @@ impl InlineBuilder {
         flush_job(&mut job, &mut links, &mut chars, &mut chunks);
 
         Inline { chunks, plain: self.plain, anchors: self.anchors }
-    }
-}
-
-fn emoji_at(t: &str, i: usize) -> Option<(usize, &'static str)> {
-    let b = t.as_bytes();
-    let mut j = i + 1;
-    while j < b.len() && j - i <= 40 {
-        let c = b[j];
-        if c == b':' {
-            break;
-        }
-        if !(c.is_ascii_alphanumeric() || c == b'_' || c == b'+' || c == b'-') {
-            return None;
-        }
-        j += 1;
-    }
-    if j >= b.len() || b[j] != b':' || j == i + 1 {
-        return None;
-    }
-    emojis::get_by_shortcode(&t[i + 1..j]).map(|e| (j + 1, e.as_str()))
-}
-
-fn url_at(t: &str, i: usize) -> Option<(usize, String)> {
-    let b = &t.as_bytes()[i..];
-    let starts = |p: &str| b.len() >= p.len() && b[..p.len()].eq_ignore_ascii_case(p.as_bytes());
-    let prefix = if starts("https://") {
-        8
-    } else if starts("http://") {
-        7
-    } else if starts("www.") {
-        4
-    } else {
-        return None;
-    };
-    let mut end = 0;
-    while end < b.len() {
-        let c = b[end];
-        if c.is_ascii_whitespace() || c == b'<' || c >= 0x80 {
-            break;
-        }
-        end += 1;
-    }
-    while end > prefix && matches!(b[end - 1], b'.' | b',' | b':' | b';' | b'!' | b'?' | b'"' | b'\'' | b'*' | b'_' | b'~') {
-        end -= 1;
-    }
-    if end > prefix && b[end - 1] == b')' {
-        let opens = b[..end].iter().filter(|&&c| c == b'(').count();
-        let closes = b[..end].iter().filter(|&&c| c == b')').count();
-        if closes > opens {
-            end -= 1;
-        }
-    }
-    if end <= prefix {
-        return None;
-    }
-    let url = &t[i..i + end];
-    if prefix == 4 {
-        if !url[4..].contains('.') {
-            return None;
-        }
-        Some((i + end, format!("http://{url}")))
-    } else {
-        Some((i + end, url.to_string()))
     }
 }
 

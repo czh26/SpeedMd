@@ -77,19 +77,6 @@ pub fn postprocess_markdown(raw: &str) -> String {
     lines.join("\n")
 }
 
-/// 基础 Markdown → HTML 片段（阶段 7 会接入带高亮与拓展语法的完整 exporter）。
-pub fn basic_markdown_to_html(md: &str) -> String {
-    let mut opts = pulldown_cmark::Options::empty();
-    opts.insert(pulldown_cmark::Options::ENABLE_TABLES);
-    opts.insert(pulldown_cmark::Options::ENABLE_STRIKETHROUGH);
-    opts.insert(pulldown_cmark::Options::ENABLE_TASKLISTS);
-    opts.insert(pulldown_cmark::Options::ENABLE_FOOTNOTES);
-    let parser = pulldown_cmark::Parser::new_ext(md, opts);
-    let mut html = String::new();
-    pulldown_cmark::html::push_html(&mut html, parser);
-    html
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

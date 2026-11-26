@@ -90,7 +90,7 @@ impl Rcx<'_> {
     }
 }
 
-fn resolve_path(p: &str, base: Option<&Path>) -> PathBuf {
+pub fn resolve_path(p: &str, base: Option<&Path>) -> PathBuf {
     let path = Path::new(p);
     match base {
         Some(b) if path.is_relative() => b.join(path),
@@ -365,7 +365,7 @@ fn render_details(
         });
 }
 
-fn alert_style(k: BlockQuoteKind) -> (Color32, &'static str, &'static str) {
+pub fn alert_style(k: BlockQuoteKind) -> (Color32, &'static str, &'static str) {
     let c = Color32::from_rgb;
     match k {
         BlockQuoteKind::Note => (c(0x2f, 0x81, 0xf7), "ℹ", "备注 Note"),
@@ -376,7 +376,7 @@ fn alert_style(k: BlockQuoteKind) -> (Color32, &'static str, &'static str) {
     }
 }
 
-fn is_supported_highlight_lang(lang: &str) -> bool {
+pub fn is_supported_highlight_lang(lang: &str) -> bool {
     matches!(
         lang.to_ascii_lowercase().as_str(),
         "c" | "h"

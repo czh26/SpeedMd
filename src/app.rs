@@ -77,6 +77,10 @@ pub struct MdApp {
     font_search: String,
     stats_popup_open: bool,
     sidebar: SidebarState,
+    jobs: crate::jobs::JobHub,
+    export_dialog_open: bool,
+    export_follow_theme: bool,
+    export_embed_images: bool,
     shot: Option<ShotRunner>,
     bench: Option<BenchRunner>,
 }
@@ -151,6 +155,10 @@ impl MdApp {
             font_search: String::new(),
             stats_popup_open,
             sidebar: SidebarState::default(),
+            jobs: crate::jobs::JobHub::default(),
+            export_dialog_open: false,
+            export_follow_theme: true,
+            export_embed_images: false,
             shot,
             bench,
         };
@@ -310,6 +318,7 @@ impl MdApp {
             .as_deref()
             .and_then(Path::file_name)
             .map(|n| n.to_string_lossy().into_owned())
+            .or_else(|| self.docs[idx].title_hint.as_ref().map(|t| format!("{t}.md")))
             .unwrap_or_else(|| "未命名.md".into());
         let picked = rfd::FileDialog::new()
             .add_filter("Markdown", &["md", "markdown"])
@@ -323,9 +332,19 @@ impl MdApp {
     }
 
     fn write_doc(&mut self, idx: usize, path: PathBuf) -> bool {
+        if let Some(old_base) = self.docs[idx].base_dir_hint.take()
+            && let Some(new_base) = path.parent()
+        {
+            let rebased = crate::import::rewrite_relative_image_paths(&self.docs[idx].text, &old_base, new_base);
+            if rebased != self.docs[idx].text {
+                self.docs[idx].text = rebased;
+                self.docs[idx].bump_version();
+            }
+        }
         match std::fs::write(&path, self.docs[idx].text.as_bytes()) {
             Ok(()) => {
                 self.docs[idx].path = Some(path);
+                self.docs[idx].title_hint = None;
                 self.docs[idx].dirty = false;
                 self.docs[idx].is_welcome = false;
                 true
@@ -678,7 +697,7 @@ impl MdApp {
             Command::CopyAsHtml => {
                 let doc = self.doc();
                 let md = editor::selected_text(ctx, doc).unwrap_or_else(|| doc.text.clone());
-                let html = crate::convert::basic_markdown_to_html(&md);
+                let html = crate::export::to_html_fragment(&md, doc.base_dir(), self.settings.sup_sub);
                 if let Err(e) = crate::clipboard::set_html(&html, &md) {
                     self.error = Some(e);
                 }
@@ -691,10 +710,26 @@ impl MdApp {
                     editor::insert_text(ctx, doc, &text);
                 }
             }
-            Command::ImportHtml
-            | Command::ExportHtml
-            | Command::ExportHtmlFragment
-            | Command::OpenShortcuts => {}
+            Command::ImportHtml => {
+                if let Some(src) = rfd::FileDialog::new()
+                    .add_filter("HTML 网页", &["html", "htm"])
+                    .add_filter("所有文件", &["*"])
+                    .pick_file()
+                {
+                    let src = winutil::clean_path(&src);
+                    self.jobs.spawn(ctx.clone(), move || match crate::import::import_html_file(&src) {
+                        Ok(doc) => crate::jobs::JobResult::ImportDone(doc),
+                        Err(e) => crate::jobs::JobResult::Failed(e),
+                    });
+                }
+            }
+            Command::ExportHtml => {
+                self.export_dialog_open = true;
+            }
+            Command::ExportHtmlFragment => {
+                self.start_export_dialog(ctx, false);
+            }
+            Command::OpenShortcuts => {}
         }
     }
 
@@ -752,6 +787,13 @@ impl MdApp {
                 }
                 ui.separator();
                 for cmd in [Command::Save, Command::SaveAs, Command::CloseTab, Command::ReopenClosedTab] {
+                    if self.menu_btn(ui, cmd) {
+                        pending_cmd = Some(cmd);
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                for cmd in [Command::ImportHtml, Command::ExportHtml, Command::ExportHtmlFragment] {
                     if self.menu_btn(ui, cmd) {
                         pending_cmd = Some(cmd);
                         ui.close();
@@ -1285,6 +1327,89 @@ impl MdApp {
         }
     }
 
+    fn start_export_dialog(&mut self, ctx: &egui::Context, full_document: bool) {
+        let doc = self.doc();
+        let stem = doc
+            .path
+            .as_deref()
+            .and_then(Path::file_stem)
+            .map(|s| s.to_string_lossy().into_owned())
+            .or_else(|| doc.title_hint.clone())
+            .unwrap_or_else(|| "export".into());
+        let suffix = if full_document { ".html" } else { ".fragment.html" };
+        let default_name = format!("{stem}{suffix}");
+
+        let Some(picked) = rfd::FileDialog::new()
+            .add_filter("HTML 网页", &["html", "htm"])
+            .add_filter("所有文件", &["*"])
+            .set_file_name(default_name)
+            .save_file()
+        else {
+            return;
+        };
+
+        let out_path = winutil::clean_path(&picked);
+        let md = doc.text.clone();
+        let dark_theme = full_document && self.export_follow_theme && ctx.global_style().visuals.dark_mode;
+        let opts = crate::export::ExportOptions {
+            full_document,
+            dark_theme,
+            embed_images_base64: full_document && self.export_embed_images,
+            base_dir: doc.base_dir().map(Path::to_path_buf),
+            sup_sub: self.settings.sup_sub,
+            fallback_title: stem,
+        };
+        self.jobs.spawn(ctx.clone(), move || {
+            let html = crate::export::export_markdown(&md, &opts);
+            match std::fs::write(&out_path, html.as_bytes()) {
+                Ok(()) => crate::jobs::JobResult::ExportDone { path: out_path },
+                Err(e) => crate::jobs::JobResult::Failed(format!("导出 HTML 失败：{}\n{e}", out_path.display())),
+            }
+        });
+    }
+
+    fn export_dialog_window(&mut self, ctx: &egui::Context) {
+        if !self.export_dialog_open {
+            return;
+        }
+        let mut open = self.export_dialog_open;
+        let mut do_export = false;
+        let mut cancel = false;
+
+        egui::Window::new("导出完整 HTML")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(360.0)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new("页面配色").strong());
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut self.export_follow_theme, true, "跟随当前明/暗主题");
+                    ui.radio_value(&mut self.export_follow_theme, false, "固定为浅色主题");
+                });
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new("图片资源").strong());
+                ui.checkbox(&mut self.export_embed_images, "将本地图片转为 Base64 内嵌到 HTML")
+                    .on_hover_text("开启后可生成单文件 HTML，方便离线分享；关闭则保留相对路径。");
+                ui.add_space(10.0);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("选择保存路径并导出…").clicked() {
+                        do_export = true;
+                    }
+                    if ui.button("取消").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+
+        self.export_dialog_open = open && !cancel && !do_export;
+        if do_export {
+            self.start_export_dialog(ctx, true);
+        }
+    }
+
     fn stats_popup_window(&mut self, ctx: &egui::Context) {
         if !self.stats_popup_open {
             return;
@@ -1487,6 +1612,14 @@ impl eframe::App for MdApp {
             fonts::apply_choice(ctx, self.font_catalog.as_ref(), &choice);
         }
 
+        let polled = self.jobs.poll();
+        for imp in polled.imports {
+            self.push_or_activate_doc(Document::from_imported(imp.title, imp.markdown, imp.base_dir));
+        }
+        if let Some(e) = polled.error {
+            self.error = Some(e);
+        }
+
         self.handle_input(ctx);
         self.update_title(ctx);
 
@@ -1527,6 +1660,9 @@ impl eframe::App for MdApp {
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
         egui::Panel::top("tabs").show(ui, |ui| self.tab_bar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        if self.jobs.has_banner() {
+            egui::Panel::bottom("jobs_banner").show(ui, |ui| self.jobs.banner_ui(ui));
+        }
 
         if self.settings.sidebar_open {
             let active_path = self.doc().path.clone();
@@ -1620,6 +1756,7 @@ impl eframe::App for MdApp {
 
         self.confirm_dialog(ctx);
         self.error_dialog(ctx);
+        self.export_dialog_window(ctx);
         self.settings_window(ctx);
         self.stats_popup_window(ctx);
         self.self_test_screenshot(ctx);
