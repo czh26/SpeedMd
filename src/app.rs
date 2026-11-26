@@ -1,21 +1,24 @@
 //! MdPad 顶层应用状态、布局与统一命令分发。
 
 use crate::commands::Command;
-use crate::document::Document;
+use crate::document::{Document, ParseConfig};
 use crate::editor::{self, EditorConfig};
 use crate::find::{self, FindAction};
+use crate::fonts::{self, FontCatalog, FontChoice};
 use crate::keymap::Keymap;
 use crate::markdown::ParseOptions;
 use crate::preview::PreviewOptions;
 use crate::settings::{Settings, SidebarTab, ViewMode};
+use crate::stats::{self, StatsOptions};
 use crate::tabs::{self, TabAction};
 use crate::winutil;
 use eframe::egui::{
     self,
     text::{CCursor, CCursorRange},
-    Rect,
+    Align2, CursorIcon, Rect, Sense,
 };
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::time::Instant;
 
 pub const APP_NAME: &str = "MdPad";
@@ -67,6 +70,11 @@ pub struct MdApp {
     error: Option<String>,
     editor_rect: Rect,
     preview_rect: Rect,
+    font_catalog: Option<FontCatalog>,
+    font_scan_rx: Option<mpsc::Receiver<FontCatalog>>,
+    settings_open: bool,
+    font_search: String,
+    stats_popup_open: bool,
     shot: Option<ShotRunner>,
     bench: Option<BenchRunner>,
 }
@@ -114,6 +122,11 @@ impl MdApp {
         let keymap = Keymap::from_overrides(&settings.keybindings);
         let shot = shot_path.map(|path| ShotRunner { path, frames: 0, commands: test_cmds, ran_commands: false });
         let bench = bench_typing.then(|| BenchRunner::new(bench_out));
+        let needs_custom_fonts = !settings.preview_font_family.is_empty()
+            || !settings.editor_font_family.is_empty()
+            || !settings.code_font_family.is_empty();
+        let font_scan_rx = needs_custom_fonts.then(|| fonts::start_scan(cc.egui_ctx.clone()));
+        let stats_popup_open = std::env::var("MDPAD_STATS_POPUP").is_ok();
 
         let mut app = Self {
             docs: Vec::new(),
@@ -127,6 +140,11 @@ impl MdApp {
             error: None,
             editor_rect: Rect::NOTHING,
             preview_rect: Rect::NOTHING,
+            font_catalog: None,
+            font_scan_rx,
+            settings_open: false,
+            font_search: String::new(),
+            stats_popup_open,
             shot,
             bench,
         };
@@ -183,6 +201,27 @@ impl MdApp {
 
     fn parse_opts(&self) -> ParseOptions {
         ParseOptions { sup_sub: self.settings.sup_sub, front_matter: self.settings.front_matter }
+    }
+
+    fn font_choice(&self) -> FontChoice {
+        FontChoice {
+            preview: self.settings.preview_font_family.clone(),
+            editor: self.settings.editor_font_family.clone(),
+            code: self.settings.code_font_family.clone(),
+        }
+    }
+
+    fn stats_opts(&self) -> StatsOptions {
+        StatsOptions {
+            exclude_code: self.settings.stats_exclude_code,
+            exclude_syntax: self.settings.stats_exclude_syntax,
+        }
+    }
+
+    fn ensure_font_scan(&mut self, ctx: &egui::Context) {
+        if self.font_catalog.is_none() && self.font_scan_rx.is_none() {
+            self.font_scan_rx = Some(fonts::start_scan(ctx.clone()));
+        }
     }
 
     // ---------- 文件与标签操作 ----------
@@ -383,8 +422,11 @@ impl MdApp {
 
         if cur_mode == ViewMode::Edit {
             let cur_byte = editor::current_cursor_byte(ctx, self.doc());
+            let line_height = self.settings.line_height;
+            let para_spacing = self.settings.paragraph_spacing;
             let doc = self.doc_mut();
-            doc.ensure_parsed(ctx, dark, font_size, &opts, true);
+            let cfg = ParseConfig { dark, font_size, line_height, para_spacing, opts: &opts, immediate: true };
+            doc.ensure_parsed(ctx, &cfg);
             if let Some((parsed, _, _)) = doc.parsed.get() {
                 let block_idx = parsed
                     .block_ranges
@@ -396,8 +438,11 @@ impl MdApp {
             let prev = doc.view_before_source.take().unwrap_or(ViewMode::Split);
             self.settings.mode = prev;
         } else {
+            let line_height = self.settings.line_height;
+            let para_spacing = self.settings.paragraph_spacing;
             let doc = self.doc_mut();
-            doc.ensure_parsed(ctx, dark, font_size, &opts, true);
+            let cfg = ParseConfig { dark, font_size, line_height, para_spacing, opts: &opts, immediate: true };
+            doc.ensure_parsed(ctx, &cfg);
             let top_idx = doc.preview.top_block_idx;
             if let Some((parsed, _, _)) = doc.parsed.get()
                 && let Some(r) = parsed.block_ranges.get(top_idx)
@@ -571,14 +616,17 @@ impl MdApp {
             Command::FontBigger => self.adjust_font(ctx, Some(1.0)),
             Command::FontSmaller => self.adjust_font(ctx, Some(-1.0)),
             Command::FontReset => self.adjust_font(ctx, None),
+            Command::OpenSettings => {
+                self.settings_open = true;
+                self.ensure_font_scan(ctx);
+            }
             Command::ImportHtml
             | Command::ExportHtml
             | Command::ExportHtmlFragment
             | Command::CopyAsMarkdown
             | Command::CopyAsHtml
             | Command::PastePlain
-            | Command::OpenShortcuts
-            | Command::OpenSettings => {}
+            | Command::OpenShortcuts => {}
         }
     }
 
@@ -688,6 +736,11 @@ impl MdApp {
             });
 
             ui.menu_button("设置", |ui| {
+                if self.menu_btn(ui, Command::OpenSettings) {
+                    pending_cmd = Some(Command::OpenSettings);
+                    ui.close();
+                }
+                ui.separator();
                 ui.label(egui::RichText::new("Markdown 扩展语法").strong());
                 ui.checkbox(&mut self.settings.sup_sub, "上标 / 下标（^上标^、~下标~）")
                     .on_hover_text("开启后单个 ~ 表示下标，删除线请使用 ~~文本~~");
@@ -701,22 +754,6 @@ impl MdApp {
                     egui::Checkbox::new(&mut self.settings.auto_pair_in_code, "代码块内也自动补全"),
                 );
                 ui.checkbox(&mut self.settings.restore_tabs, "启动时恢复上次打开的标签");
-                ui.separator();
-                ui.label(egui::RichText::new("字号与缩放").strong());
-                egui::Grid::new("font_sizes").num_columns(2).show(ui, |ui| {
-                    ui.label("编辑器");
-                    ui.add(egui::Slider::new(&mut self.settings.editor_font_size, 10.0..=32.0).step_by(1.0));
-                    ui.end_row();
-                    ui.label("预览");
-                    ui.add(egui::Slider::new(&mut self.settings.preview_font_size, 10.0..=32.0).step_by(1.0));
-                    ui.end_row();
-                    ui.label("界面缩放");
-                    if ui.add(egui::Slider::new(&mut self.settings.ui_zoom, 0.75..=2.0).step_by(0.05)).changed() {
-                        ctx.set_zoom_factor(self.settings.ui_zoom);
-                    }
-                    ui.end_row();
-                });
-                ui.weak("Ctrl + = / - / 0 可按鼠标所在面板单独调字号");
             });
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -763,24 +800,55 @@ impl MdApp {
         }
     }
 
-    fn status_bar(&self, ui: &mut egui::Ui) {
+    fn status_bar(&mut self, ui: &mut egui::Ui) {
         let doc = self.doc();
+        let path = doc.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "未保存的新文件".into());
+        let dirty = doc.dirty;
+        let full = doc.stats.full;
+        let sel = doc.stats.sel;
+
+        let stats_text = if let Some(s) = sel {
+            format!(
+                "已选 {} 字 / 共 {} 字   {} 行",
+                stats::format_thousands(s.words),
+                stats::format_thousands(full.words),
+                stats::format_thousands(full.lines)
+            )
+        } else {
+            format!(
+                "{} 行   {} 字   {} 字符",
+                stats::format_thousands(full.lines),
+                stats::format_thousands(full.words),
+                stats::format_thousands(full.chars_with_spaces)
+            )
+        };
+
+        let mut clicked_stats = false;
         ui.horizontal(|ui| {
-            let path = doc.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "未保存的新文件".into());
             ui.weak(path);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.weak(format!("{} 行   {} 字   {} 字符", doc.stats.lines, doc.stats.words, doc.stats.chars));
-                if doc.dirty {
+                let r = ui.add(egui::Label::new(egui::RichText::new(stats_text).weak()).sense(Sense::click()));
+                if r.hovered() {
+                    ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                }
+                if r.on_hover_text("点击查看详细字数统计").clicked() {
+                    clicked_stats = true;
+                }
+                if dirty {
                     ui.colored_label(egui::Color32::from_rgb(0xe0, 0x9a, 0x3e), "● 未保存");
                 }
             });
         });
+        if clicked_stats {
+            self.stats_popup_open = !self.stats_popup_open;
+        }
     }
 
     fn editor_pane(&mut self, ui: &mut egui::Ui) {
         self.editor_rect = ui.max_rect();
         let cfg = EditorConfig {
             font_size: self.settings.editor_font_size,
+            max_content_width: self.settings.max_content_width,
             auto_pair: self.settings.auto_pair,
             auto_pair_in_code: self.settings.auto_pair_in_code,
         };
@@ -792,16 +860,24 @@ impl MdApp {
         self.preview_rect = ui.max_rect();
         let dark = ui.visuals().dark_mode;
         let font_size = self.settings.preview_font_size;
+        let line_height = self.settings.line_height;
+        let para_spacing = self.settings.paragraph_spacing;
         let opts = self.parse_opts();
         let code_line_numbers = self.settings.code_line_numbers;
+        let max_content_width = self.settings.max_content_width;
         let ctx = ui.ctx().clone();
 
         let actions = {
             let doc = self.doc_mut();
-            doc.ensure_parsed(&ctx, dark, font_size, &opts, true);
+            let pcfg = ParseConfig { dark, font_size, line_height, para_spacing, opts: &opts, immediate: true };
+            doc.ensure_parsed(&ctx, &pcfg);
             let base = doc.base_dir().map(Path::to_path_buf);
             if let Some((parsed_doc, th, key)) = doc.parsed.get() {
-                let preview_opts = PreviewOptions { base_dir: base.as_deref(), code_line_numbers };
+                let preview_opts = PreviewOptions {
+                    base_dir: base.as_deref(),
+                    code_line_numbers,
+                    max_content_width,
+                };
                 doc.preview.ui(ui, doc.uid, parsed_doc, th, key, preview_opts)
             } else {
                 Default::default()
@@ -992,6 +1068,187 @@ impl MdApp {
             });
     }
 
+    fn settings_window(&mut self, ctx: &egui::Context) {
+        if !self.settings_open {
+            return;
+        }
+        let mut open = self.settings_open;
+        let mut fonts_changed = false;
+        let all_fonts = self.font_catalog.as_ref().map(FontCatalog::all_names).unwrap_or_default();
+        let mono_fonts = self.font_catalog.as_ref().map(FontCatalog::mono_names).unwrap_or_default();
+        let scanning = self.font_scan_rx.is_some();
+
+        egui::Window::new("外观与编辑器设置")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(480.0)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
+                    ui.label(egui::RichText::new("字体").strong());
+                    if scanning {
+                        ui.weak("正在后台扫描系统字体…");
+                    } else if let Some(cat) = &self.font_catalog {
+                        ui.horizontal(|ui| {
+                            ui.label("筛选");
+                            ui.add(egui::TextEdit::singleline(&mut self.font_search).desired_width(180.0).hint_text("输入字体名…"));
+                            ui.weak(format!("共 {} 个字体族", cat.families.len()));
+                        });
+                    }
+                    let filter = self.font_search.trim().to_ascii_lowercase();
+                    let filter_list = |src: &[String]| -> Vec<String> {
+                        if filter.is_empty() {
+                            src.to_vec()
+                        } else {
+                            src.iter().filter(|n| n.to_ascii_lowercase().contains(&filter)).cloned().collect()
+                        }
+                    };
+                    let filtered_all = filter_list(&all_fonts);
+                    let filtered_mono = if mono_fonts.is_empty() { &filtered_all } else { &filter_list(&mono_fonts) };
+
+                    egui::Grid::new("settings_fonts").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+                        ui.label("预览正文字体");
+                        fonts_changed |= font_combo(
+                            ui,
+                            "preview_font_combo",
+                            &mut self.settings.preview_font_family,
+                            &filtered_all,
+                            "系统默认（Segoe UI + 微软雅黑）",
+                        );
+                        ui.end_row();
+
+                        ui.label("编辑器字体");
+                        fonts_changed |= font_combo(
+                            ui,
+                            "editor_font_combo",
+                            &mut self.settings.editor_font_family,
+                            &filtered_all,
+                            "系统默认（Consolas + 微软雅黑）",
+                        );
+                        ui.end_row();
+
+                        ui.label("代码块字体");
+                        fonts_changed |= font_combo(
+                            ui,
+                            "code_font_combo",
+                            &mut self.settings.code_font_family,
+                            filtered_mono,
+                            "系统默认（Consolas + 微软雅黑）",
+                        );
+                        ui.end_row();
+                    });
+
+                    ui.separator();
+                    ui.label(egui::RichText::new("排版与缩放").strong());
+                    egui::Grid::new("settings_layout").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+                        ui.label("编辑器字号");
+                        ui.add(egui::Slider::new(&mut self.settings.editor_font_size, 10.0..=32.0).step_by(1.0));
+                        ui.end_row();
+                        ui.label("预览字号");
+                        ui.add(egui::Slider::new(&mut self.settings.preview_font_size, 10.0..=32.0).step_by(1.0));
+                        ui.end_row();
+                        ui.label("预览行高");
+                        ui.add(egui::Slider::new(&mut self.settings.line_height, 1.2..=2.2).step_by(0.05));
+                        ui.end_row();
+                        ui.label("预览段距");
+                        ui.add(egui::Slider::new(&mut self.settings.paragraph_spacing, 0.3..=1.5).step_by(0.05));
+                        ui.end_row();
+                        ui.label("界面缩放");
+                        if ui.add(egui::Slider::new(&mut self.settings.ui_zoom, 0.75..=2.0).step_by(0.05)).changed() {
+                            ctx.set_zoom_factor(self.settings.ui_zoom);
+                        }
+                        ui.end_row();
+                    });
+
+                    let mut limit_width = self.settings.max_content_width > 0.0;
+                    if ui.checkbox(&mut limit_width, "限制最大阅读/编辑行宽（居中显示）").changed() {
+                        self.settings.max_content_width = if limit_width { 820.0 } else { 0.0 };
+                    }
+                    if limit_width {
+                        ui.add(
+                            egui::Slider::new(&mut self.settings.max_content_width, 560.0..=1400.0)
+                                .step_by(20.0)
+                                .text("px"),
+                        );
+                    }
+
+                    ui.separator();
+                    ui.label(egui::RichText::new("Markdown 与编辑器").strong());
+                    ui.checkbox(&mut self.settings.sup_sub, "上标 / 下标（^上标^、~下标~）");
+                    ui.checkbox(&mut self.settings.front_matter, "预览中显示 YAML Front Matter");
+                    ui.checkbox(&mut self.settings.code_line_numbers, "代码块显示行号");
+                    ui.checkbox(&mut self.settings.auto_pair, "自动闭合括号与引号");
+                    ui.add_enabled(
+                        self.settings.auto_pair,
+                        egui::Checkbox::new(&mut self.settings.auto_pair_in_code, "代码块内也自动补全"),
+                    );
+                    ui.checkbox(&mut self.settings.restore_tabs, "启动时恢复上次打开的标签");
+
+                    ui.separator();
+                    ui.label(egui::RichText::new("字数统计").strong());
+                    ui.checkbox(&mut self.settings.stats_exclude_code, "统计时排除代码块与行内代码");
+                    ui.checkbox(&mut self.settings.stats_exclude_syntax, "统计时忽略 Markdown 标记符号");
+                });
+            });
+        self.settings_open = open;
+
+        if fonts_changed {
+            let choice = self.font_choice();
+            fonts::apply_choice(ctx, self.font_catalog.as_ref(), &choice);
+        }
+    }
+
+    fn stats_popup_window(&mut self, ctx: &egui::Context) {
+        if !self.stats_popup_open {
+            return;
+        }
+        let mut open = self.stats_popup_open;
+        let doc = self.doc();
+        let (title_note, s) = match doc.stats.sel {
+            Some(sel) => ("当前选区", sel),
+            None => ("全文", doc.stats.full),
+        };
+        egui::Window::new("字数统计")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::RIGHT_BOTTOM, [-12.0, -34.0])
+            .show(ctx, |ui| {
+                ui.weak(format!("统计范围：{title_note}（已排除 Front Matter）"));
+                ui.add_space(4.0);
+                egui::Grid::new("stats_detail_grid").num_columns(2).spacing([24.0, 4.0]).show(ui, |ui| {
+                    ui.label("总字数（中文 + 英文词）");
+                    ui.strong(stats::format_thousands(s.words));
+                    ui.end_row();
+                    ui.label("中日韩字符");
+                    ui.label(stats::format_thousands(s.cjk_chars));
+                    ui.end_row();
+                    ui.label("英文词数");
+                    ui.label(stats::format_thousands(s.en_words));
+                    ui.end_row();
+                    ui.label("字符数（含空格）");
+                    ui.label(stats::format_thousands(s.chars_with_spaces));
+                    ui.end_row();
+                    ui.label("字符数（不含空格）");
+                    ui.label(stats::format_thousands(s.chars_no_spaces));
+                    ui.end_row();
+                    ui.label("行数");
+                    ui.label(stats::format_thousands(s.lines));
+                    ui.end_row();
+                    ui.label("段落数");
+                    ui.label(stats::format_thousands(s.paragraphs));
+                    ui.end_row();
+                    ui.label("预计阅读时长");
+                    ui.label(stats::format_read_time(s.read_minutes, s.words));
+                    ui.end_row();
+                });
+                ui.separator();
+                ui.checkbox(&mut self.settings.stats_exclude_code, "排除代码块");
+                ui.checkbox(&mut self.settings.stats_exclude_syntax, "忽略 Markdown 标记");
+            });
+        self.stats_popup_open = open;
+    }
+
     fn self_test_screenshot(&mut self, ctx: &egui::Context) {
         let Some(shot) = self.shot.as_mut() else { return };
         shot.frames += 1;
@@ -1065,6 +1322,33 @@ impl MdApp {
     }
 }
 
+fn font_combo(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    selected: &mut String,
+    names: &[String],
+    default_label: &str,
+) -> bool {
+    let mut changed = false;
+    let display = if selected.is_empty() { default_label } else { selected.as_str() };
+    egui::ComboBox::from_id_salt(id_salt)
+        .width(260.0)
+        .selected_text(display)
+        .show_ui(ui, |ui| {
+            if ui.selectable_label(selected.is_empty(), default_label).clicked() && !selected.is_empty() {
+                selected.clear();
+                changed = true;
+            }
+            for name in names {
+                if ui.selectable_label(selected == name, name).clicked() && selected != name {
+                    *selected = name.clone();
+                    changed = true;
+                }
+            }
+        });
+    changed
+}
+
 fn percentile(sorted: &[f64], p: f64) -> f64 {
     if sorted.is_empty() {
         return 0.0;
@@ -1106,22 +1390,42 @@ impl eframe::App for MdApp {
         let cpu_start = self.bench_pre_frame();
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
+
+        if let Some(rx) = &self.font_scan_rx
+            && let Ok(cat) = rx.try_recv()
+        {
+            self.font_catalog = Some(cat);
+            self.font_scan_rx = None;
+            let choice = self.font_choice();
+            fonts::apply_choice(ctx, self.font_catalog.as_ref(), &choice);
+        }
+
         self.handle_input(ctx);
         self.update_title(ctx);
 
+        let stats_opts = self.stats_opts();
+        let sel_chars = editor::current_selection_chars(ctx, self.doc().uid, &self.doc().text);
         {
             let doc = self.doc_mut();
             if doc.find.open {
                 doc.find.ensure_updated(ctx, &doc.text, doc.version, false);
             }
+            doc.stats.ensure_full(ctx, &doc.text, doc.version, stats_opts, doc.last_edit_at);
+            let sel_bytes = (sel_chars.start < sel_chars.end).then(|| {
+                editor::char_to_byte(&doc.text, sel_chars.start)..editor::char_to_byte(&doc.text, sel_chars.end)
+            });
+            doc.stats.update_selection(&doc.text, doc.version, sel_bytes, stats_opts);
         }
 
         if self.settings.mode == ViewMode::Edit {
             let dark = ui.visuals().dark_mode;
             let font_size = self.settings.preview_font_size;
+            let line_height = self.settings.line_height;
+            let para_spacing = self.settings.paragraph_spacing;
             let opts = self.parse_opts();
             let doc = self.doc_mut();
-            doc.ensure_parsed(ctx, dark, font_size, &opts, false);
+            let pcfg = ParseConfig { dark, font_size, line_height, para_spacing, opts: &opts, immediate: false };
+            doc.ensure_parsed(ctx, &pcfg);
         }
 
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
@@ -1175,6 +1479,8 @@ impl eframe::App for MdApp {
 
         self.confirm_dialog(ctx);
         self.error_dialog(ctx);
+        self.settings_window(ctx);
+        self.stats_popup_window(ctx);
         self.self_test_screenshot(ctx);
         self.bench_post_frame(ctx, cpu_start);
     }

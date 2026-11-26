@@ -24,6 +24,7 @@ pub struct Actions {
 pub struct PreviewOptions<'a> {
     pub base_dir: Option<&'a Path>,
     pub code_line_numbers: bool,
+    pub max_content_width: f32,
 }
 
 #[derive(Default)]
@@ -136,50 +137,64 @@ impl PreviewState {
                     .inner_margin(egui::Margin { left: 28, right: 28, top: 18, bottom: 60 })
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-                        let width = ui.available_width();
-                        if heights.len() != doc.blocks.len() || (width - *heights_width).abs() > 0.5 {
-                            *heights = vec![None; doc.blocks.len()];
-                            *heights_width = width;
-                        }
-                        let mut rcx = Rcx {
-                            th,
-                            doc,
-                            scroll_to,
-                            nav: &mut nav,
-                            actions: &mut actions,
-                            base_dir: opts.base_dir,
-                            list_depth: 0,
-                            code_line_numbers: opts.code_line_numbers,
+                        let avail_w = ui.available_width();
+                        let width = if opts.max_content_width > 0.0 {
+                            avail_w.min(opts.max_content_width)
+                        } else {
+                            avail_w
                         };
-                        for (i, block) in doc.blocks.iter().enumerate() {
-                            let y = ui.cursor().top() - origin;
-                            if !force
-                                && let Some(h) = heights[i]
-                                && (y + h < viewport.top() - 600.0 || y > viewport.bottom() + 600.0)
-                            {
-                                ui.allocate_space(vec2(width, h));
-                                if first_visible.is_none() && y + h >= viewport.top() {
-                                    first_visible = Some(i);
+                        let side_pad = ((avail_w - width) * 0.5).max(0.0);
+                        ui.horizontal(|ui| {
+                            if side_pad > 0.0 {
+                                ui.add_space(side_pad);
+                            }
+                            ui.vertical(|ui| {
+                                ui.set_width(width);
+                                if heights.len() != doc.blocks.len() || (width - *heights_width).abs() > 0.5 {
+                                    *heights = vec![None; doc.blocks.len()];
+                                    *heights_width = width;
                                 }
-                                continue;
-                            }
-                            let start = ui.cursor().top();
-                            render_block(ui, block, &mut rcx, i == 0);
-                            let end = ui.cursor().top();
-                            heights[i] = Some(end - start);
-                            if first_visible.is_none() && (end - origin) >= viewport.top() {
-                                first_visible = Some(i);
-                            }
-                            if *scroll_to_block == Some(i) {
-                                let rect = Rect::from_x_y_ranges(ui.max_rect().x_range(), start..=end.max(start + 1.0));
-                                ui.scroll_to_rect(rect, Some(Align::TOP));
+                                let mut rcx = Rcx {
+                                    th,
+                                    doc,
+                                    scroll_to,
+                                    nav: &mut nav,
+                                    actions: &mut actions,
+                                    base_dir: opts.base_dir,
+                                    list_depth: 0,
+                                    code_line_numbers: opts.code_line_numbers,
+                                };
+                                for (i, block) in doc.blocks.iter().enumerate() {
+                                    let y = ui.cursor().top() - origin;
+                                    if !force
+                                        && let Some(h) = heights[i]
+                                        && (y + h < viewport.top() - 600.0 || y > viewport.bottom() + 600.0)
+                                    {
+                                        ui.allocate_space(vec2(width, h));
+                                        if first_visible.is_none() && y + h >= viewport.top() {
+                                            first_visible = Some(i);
+                                        }
+                                        continue;
+                                    }
+                                    let start = ui.cursor().top();
+                                    render_block(ui, block, &mut rcx, i == 0);
+                                    let end = ui.cursor().top();
+                                    heights[i] = Some(end - start);
+                                    if first_visible.is_none() && (end - origin) >= viewport.top() {
+                                        first_visible = Some(i);
+                                    }
+                                    if *scroll_to_block == Some(i) {
+                                        let rect = Rect::from_x_y_ranges(ui.max_rect().x_range(), start..=end.max(start + 1.0));
+                                        ui.scroll_to_rect(rect, Some(Align::TOP));
+                                        *scroll_to_block = None;
+                                    }
+                                }
+                                render_footnotes(ui, &mut rcx);
+                                // 完整渲染过一遍后，找不到的锚点 / 块直接丢弃
+                                *rcx.scroll_to = None;
                                 *scroll_to_block = None;
-                            }
-                        }
-                        render_footnotes(ui, &mut rcx);
-                        // 完整渲染过一遍后，找不到的锚点 / 块直接丢弃
-                        *rcx.scroll_to = None;
-                        *scroll_to_block = None;
+                            });
+                        });
                     });
             });
 
@@ -207,10 +222,10 @@ fn render_block(ui: &mut egui::Ui, block: &Block, rcx: &mut Rcx, first: bool) {
     let size = th.size;
     if !first {
         let gap = match block {
-            Block::Heading { level, .. } if *level <= 2 => size * 1.3,
-            Block::Heading { .. } => size * 1.0,
+            Block::Heading { level, .. } if *level <= 2 => size * (th.para_spacing + 0.55),
+            Block::Heading { .. } => size * (th.para_spacing + 0.25),
             _ if rcx.list_depth > 0 => size * 0.35,
-            _ => size * 0.75,
+            _ => size * th.para_spacing,
         };
         ui.add_space(gap);
     }

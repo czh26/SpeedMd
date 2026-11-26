@@ -18,6 +18,8 @@ pub fn bold_family() -> FontFamily {
 pub struct Theme {
     pub dark: bool,
     pub size: f32,
+    pub line_height_factor: f32,
+    pub para_spacing: f32,
     pub text: Color32,
     pub weak: Color32,
     pub heading: Color32,
@@ -33,12 +35,19 @@ pub struct Theme {
 }
 
 impl Theme {
+    #[allow(dead_code)]
     pub fn new(dark: bool, size: f32) -> Self {
+        Self::with_spacing(dark, size, 1.6, 0.75)
+    }
+
+    pub fn with_spacing(dark: bool, size: f32, line_height_factor: f32, para_spacing: f32) -> Self {
         let c = Color32::from_rgb;
         if dark {
             Self {
                 dark,
                 size,
+                line_height_factor,
+                para_spacing,
                 text: c(0xd8, 0xdb, 0xdf),
                 weak: c(0x8b, 0x94, 0x9e),
                 heading: c(0xf0, 0xf2, 0xf4),
@@ -56,6 +65,8 @@ impl Theme {
             Self {
                 dark,
                 size,
+                line_height_factor,
+                para_spacing,
                 text: c(0x24, 0x29, 0x2f),
                 weak: c(0x65, 0x6d, 0x76),
                 heading: c(0x11, 0x14, 0x18),
@@ -73,7 +84,7 @@ impl Theme {
     }
 
     pub fn line_height(&self) -> f32 {
-        self.size * 1.6
+        self.size * self.line_height_factor
     }
 }
 
@@ -450,7 +461,7 @@ impl InlineBuilder {
             size *= 0.9;
         }
         let mut valign = Align::BOTTOM;
-        let mut line_height = Some(base.size * 1.6);
+        let mut line_height = Some(base.size * th.line_height_factor);
         if st.code || st.kbd {
             valign = Align::Center;
             line_height = None;

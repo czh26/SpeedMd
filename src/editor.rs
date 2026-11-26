@@ -1,11 +1,11 @@
 //! 编辑器面板：TextEdit 包装、编程式 EditOps（单步撤销）、括号/围栏自动补全、跳转到偏移。
 
-use crate::document::{Document, Stats};
+use crate::document::Document;
 use crate::highlight::FindOverlay;
 use eframe::egui::{
     self,
     text::{CCursor, CCursorRange},
-    vec2, Align, Event, ImeEvent, Key, TextEdit,
+    vec2, Align, Event, FontFamily, ImeEvent, Key, TextEdit,
 };
 use std::ops::Range;
 
@@ -70,7 +70,6 @@ pub fn apply_edit(
     state.store(ctx, id);
 
     doc.dirty = true;
-    doc.stats = Stats::of(&doc.text);
     doc.bump_version();
     doc.find.invalidate();
 }
@@ -339,6 +338,7 @@ pub fn insert_code_block(ctx: &egui::Context, doc: &mut Document) {
 
 pub struct EditorConfig {
     pub font_size: f32,
+    pub max_content_width: f32,
     pub auto_pair: bool,
     pub auto_pair_in_code: bool,
 }
@@ -449,9 +449,10 @@ pub fn show(ui: &mut egui::Ui, doc: &mut Document, cfg: &EditorConfig) -> egui::
     }
 
     let dark = ui.visuals().dark_mode;
-    let font_id = egui::FontId::monospace(cfg.font_size);
+    let font_id = egui::FontId::new(cfg.font_size, FontFamily::Name("editor".into()));
     let uid = doc.uid;
     let version = doc.version;
+    let max_width = cfg.max_content_width;
     let mut changed = false;
 
     let inner = {
@@ -472,15 +473,33 @@ pub fn show(ui: &mut egui::Ui, doc: &mut Document, cfg: &EditorConfig) -> egui::
             .id_salt(("editor_scroll", uid))
             .auto_shrink(false)
             .show(ui, |ui| {
-                let output = TextEdit::multiline(text)
-                    .id(id)
-                    .desired_width(f32::INFINITY)
-                    .min_size(ui.available_size())
-                    .frame(egui::Frame::NONE)
-                    .lock_focus(true)
-                    .margin(egui::Margin::symmetric(12, 10))
-                    .layouter(&mut layouter)
-                    .show(ui);
+                let avail_size = ui.available_size();
+                let (pad, target_w) = if max_width > 0.0 && avail_size.x > max_width + 24.0 {
+                    (((avail_size.x - max_width) * 0.5).max(0.0), max_width)
+                } else {
+                    (0.0, f32::INFINITY)
+                };
+                let min_sz = if pad > 0.0 { vec2(target_w, avail_size.y) } else { avail_size };
+                let mut render_edit = |ui: &mut egui::Ui| {
+                    TextEdit::multiline(text)
+                        .id(id)
+                        .desired_width(target_w)
+                        .min_size(min_sz)
+                        .frame(egui::Frame::NONE)
+                        .lock_focus(true)
+                        .margin(egui::Margin::symmetric(12, 10))
+                        .layouter(&mut layouter)
+                        .show(ui)
+                };
+                let output = if pad > 0.0 {
+                    ui.horizontal(|ui| {
+                        ui.add_space(pad);
+                        render_edit(ui)
+                    })
+                    .inner
+                } else {
+                    render_edit(ui)
+                };
 
                 if let Some(c) = scroll_target_char {
                     let rect = output
@@ -498,7 +517,6 @@ pub fn show(ui: &mut egui::Ui, doc: &mut Document, cfg: &EditorConfig) -> egui::
 
     if changed {
         doc.dirty = true;
-        doc.stats = Stats::of(&doc.text);
         doc.bump_version();
         doc.find.invalidate();
     }

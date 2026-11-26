@@ -1331,6 +1331,7 @@ dependencies = [
  "emojis",
  "image",
  "pulldown-cmark",
+ "read-fonts",
  "regex",
  "rfd",
  "serde",

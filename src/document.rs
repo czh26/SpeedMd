@@ -5,6 +5,7 @@ use crate::highlight::Highlighter;
 use crate::markdown::{self, Doc, ParseOptions, Theme};
 use crate::preview::PreviewState;
 use crate::settings::ViewMode;
+use crate::stats::StatsCache;
 use eframe::egui;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -16,45 +17,19 @@ use std::time::{Duration, Instant};
 
 static NEXT_UID: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Default, Clone, Copy)]
-pub struct Stats {
-    pub chars: usize,
-    pub words: usize,
-    pub lines: usize,
-}
-
-impl Stats {
-    pub fn of(text: &str) -> Self {
-        let (mut chars, mut words, mut lines, mut in_word) = (0, 0, 1, false);
-        for c in text.chars() {
-            chars += 1;
-            if c == '\n' {
-                lines += 1;
-            }
-            if is_cjk(c) {
-                words += 1;
-                in_word = false;
-            } else if c.is_alphanumeric() {
-                if !in_word {
-                    words += 1;
-                    in_word = true;
-                }
-            } else {
-                in_word = false;
-            }
-        }
-        Self { chars, words, lines }
-    }
-}
-
-fn is_cjk(c: char) -> bool {
-    matches!(c as u32, 0x4E00..=0x9FFF | 0x3400..=0x4DBF | 0x3040..=0x30FF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF)
-}
-
 #[derive(Default)]
 pub struct ParseCache {
     key: u64,
     cached: Option<(Arc<Doc>, Theme)>,
+}
+
+pub struct ParseConfig<'a> {
+    pub dark: bool,
+    pub font_size: f32,
+    pub line_height: f32,
+    pub para_spacing: f32,
+    pub opts: &'a ParseOptions,
+    pub immediate: bool,
 }
 
 impl ParseCache {
@@ -64,19 +39,25 @@ impl ParseCache {
         ctx: &egui::Context,
         doc_text: &str,
         version: u64,
-        dark: bool,
-        font_size: f32,
-        opts: &ParseOptions,
-        immediate: bool,
+        cfg: &ParseConfig<'_>,
         last_edit_at: Option<Instant>,
     ) {
         let mut h = DefaultHasher::new();
-        (version, dark, font_size.to_bits(), opts.sup_sub, opts.front_matter).hash(&mut h);
+        (
+            version,
+            cfg.dark,
+            cfg.font_size.to_bits(),
+            cfg.line_height.to_bits(),
+            cfg.para_spacing.to_bits(),
+            cfg.opts.sup_sub,
+            cfg.opts.front_matter,
+        )
+            .hash(&mut h);
         let key = h.finish();
         if self.cached.is_some() && self.key == key {
             return;
         }
-        if !immediate && self.cached.is_some() {
+        if !cfg.immediate && self.cached.is_some() {
             let delay = Duration::from_millis(200);
             if let Some(t) = last_edit_at {
                 let elapsed = t.elapsed();
@@ -86,8 +67,8 @@ impl ParseCache {
                 }
             }
         }
-        let th = Theme::new(dark, font_size);
-        let doc = markdown::parse(doc_text, &th, opts);
+        let th = Theme::with_spacing(cfg.dark, cfg.font_size, cfg.line_height, cfg.para_spacing);
+        let doc = markdown::parse(doc_text, &th, cfg.opts);
         self.cached = Some((Arc::new(doc), th));
         self.key = key;
     }
@@ -107,7 +88,7 @@ pub struct Document {
     pub version: u64,
     pub last_edit_at: Option<Instant>,
     pub parsed: ParseCache,
-    pub stats: Stats,
+    pub stats: StatsCache,
     pub preview: PreviewState,
     pub hl: Highlighter,
     pub find: FindState,
@@ -117,24 +98,8 @@ pub struct Document {
 }
 
 impl Document {
-    pub fn ensure_parsed(
-        &mut self,
-        ctx: &egui::Context,
-        dark: bool,
-        font_size: f32,
-        opts: &ParseOptions,
-        immediate: bool,
-    ) {
-        self.parsed.ensure_parsed(
-            ctx,
-            &self.text,
-            self.version,
-            dark,
-            font_size,
-            opts,
-            immediate,
-            self.last_edit_at,
-        );
+    pub fn ensure_parsed(&mut self, ctx: &egui::Context, cfg: &ParseConfig<'_>) {
+        self.parsed.ensure_parsed(ctx, &self.text, self.version, cfg, self.last_edit_at);
     }
 
     pub fn new_empty() -> Self {
@@ -148,7 +113,7 @@ impl Document {
             version: 1,
             last_edit_at: None,
             parsed: ParseCache::default(),
-            stats: Stats::default(),
+            stats: StatsCache::default(),
             preview: PreviewState::default(),
             hl: Highlighter::default(),
             find: FindState::default(),
@@ -161,14 +126,12 @@ impl Document {
     pub fn from_welcome(welcome: &str) -> Self {
         let mut doc = Self::new_empty();
         doc.text = welcome.replace("\r\n", "\n");
-        doc.stats = Stats::of(&doc.text);
         doc.is_welcome = true;
         doc
     }
 
     pub fn from_file(path: PathBuf, text: String) -> Self {
         let mut doc = Self::new_empty();
-        doc.stats = Stats::of(&text);
         doc.text = text;
         doc.path = Some(path);
         doc
@@ -209,7 +172,6 @@ impl Document {
             };
             self.text.replace_range(offset + 1..offset + 2, new);
             self.dirty = true;
-            self.stats = Stats::of(&self.text);
             self.bump_version();
         }
     }

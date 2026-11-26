@@ -14,6 +14,7 @@ egui_extras = { version = "0.37", features = ["file", "http", "image"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 # Markdown 解析（CommonMark + GFM + 脚注 + 上下标 + Front Matter）
 pulldown-cmark = { version = "0.13", default-features = false }
+read-fonts = "0.41"
 regex = "1"
 # :emoji: 短码
 emojis = "0.9"
