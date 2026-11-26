@@ -284,7 +284,7 @@ cargo test                     # stats / keymap / find / textproc / html_inline 
 
 ## 6. 进度清单
 - [x] 阶段 1：架构重构 + 多标签页 + 命令系统
-- [ ] 阶段 2：编辑器增强（源代码模式、括号补全、代码块、查找替换）
+- [x] 阶段 2：编辑器增强（源代码模式、括号补全、代码块、查找替换）
 - [ ] 阶段 3：外观与字数统计
 - [ ] 阶段 4：侧边栏（文件树、文章列表、大纲）
 - [ ] 阶段 5：内嵌 HTML 与音视频
@@ -294,3 +294,9 @@ cargo test                     # stats / keymap / find / textproc / html_inline 
 
 ## 7. 实施中的决定
 - **Git 推送**（2026-11-26 用户决定）：每个阶段只在本地 `git commit`，**不推送**到 GitHub；等用户明确要求时再执行 `git push origin main`。
+
+## 8. 实测记录
+- **阶段 2 性能基准（`MDPAD_BENCH=typing`，release 版，100,300 字符中英文混排文档，模拟连续输入 200 个字符）**：
+  - `cpu_ms`（主线程高亮 + `TextEdit` 排版与 UI 帧耗时）：平均 `5.24 ms`，P50 `5.09 ms`，P95 `6.59 ms`
+  - `wall_ms`（端到端帧间隔，含垂直同步）：平均 `16.92 ms`，P50 `16.67 ms`，P95 `17.51 ms`
+  - `release exe` 体积：`11,569,152` 字节（约 `11.03 MB`）

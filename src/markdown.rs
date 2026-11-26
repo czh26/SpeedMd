@@ -126,6 +126,8 @@ pub struct Heading {
     pub level: u8,
     pub text: String,
     pub anchor: String,
+    #[allow(dead_code)]
+    pub byte_offset: usize,
 }
 
 pub struct Footnote {
@@ -136,6 +138,7 @@ pub struct Footnote {
 
 pub struct Doc {
     pub blocks: Vec<Block>,
+    pub block_ranges: Vec<Range<usize>>,
     pub headings: Vec<Heading>,
     pub footnotes: Vec<Footnote>,
 }
@@ -663,7 +666,7 @@ enum Frame {
 enum Leaf {
     None,
     Para,
-    Heading { level: u8, id: Option<String> },
+    Heading { level: u8, id: Option<String>, offset: usize },
     Cell,
     Code { lang: String, buf: String },
     Html(String),
@@ -683,6 +686,8 @@ struct DocParser<'t> {
     sup_sub: bool,
     show_meta: bool,
     stack: Vec<Frame>,
+    root_ranges: Vec<Range<usize>>,
+    cur_top_range: Option<Range<usize>>,
     leaf: Leaf,
     inline: Option<InlineBuilder>,
     implicit: bool,
@@ -700,6 +705,8 @@ impl<'t> DocParser<'t> {
             sup_sub,
             show_meta,
             stack: vec![Frame::Root(Vec::new())],
+            root_ranges: Vec::new(),
+            cur_top_range: None,
             leaf: Leaf::None,
             inline: None,
             implicit: false,
@@ -721,7 +728,11 @@ impl<'t> DocParser<'t> {
 
     fn push_block(&mut self, b: Block) {
         match self.stack.last_mut() {
-            Some(Frame::Root(v) | Frame::Quote(_, v) | Frame::Item(_, v) | Frame::Footnote(_, v)) => v.push(b),
+            Some(Frame::Root(v)) => {
+                v.push(b);
+                self.root_ranges.push(self.cur_top_range.take().unwrap_or(0..0));
+            }
+            Some(Frame::Quote(_, v) | Frame::Item(_, v) | Frame::Footnote(_, v)) => v.push(b),
             Some(Frame::List(_, items)) => {
                 // 理论上不会出现：列表里直接出现块，挂到最后一个条目上
                 if let Some(it) = items.last_mut() {
@@ -773,7 +784,16 @@ impl<'t> DocParser<'t> {
 
     fn event(&mut self, ev: Event, range: Range<usize>, src: &str) {
         match ev {
-            Event::Start(tag) => self.start(tag),
+            Event::Start(tag) => {
+                if self.stack.len() == 1
+                    && self.tables.is_empty()
+                    && matches!(self.leaf, Leaf::None)
+                    && !matches!(tag, Tag::FootnoteDefinition(_))
+                {
+                    self.cur_top_range = Some(range.clone());
+                }
+                self.start(tag, range.start);
+            }
             Event::End(end) => self.end(end),
             Event::Text(t) => match &mut self.leaf {
                 Leaf::Code { buf, .. } | Leaf::Html(buf) | Leaf::Meta(buf) => buf.push_str(&t),
@@ -793,6 +813,9 @@ impl<'t> DocParser<'t> {
             Event::HardBreak => self.ib().hard_break(),
             Event::Rule => {
                 self.flush_implicit();
+                if self.stack.len() == 1 && self.tables.is_empty() {
+                    self.cur_top_range = Some(range);
+                }
                 self.push_block(Block::Rule);
             }
             Event::TaskListMarker(checked) => {
@@ -804,7 +827,7 @@ impl<'t> DocParser<'t> {
         }
     }
 
-    fn start(&mut self, tag: Tag) {
+    fn start(&mut self, tag: Tag, start_offset: usize) {
         match tag {
             Tag::Paragraph => {
                 self.flush_implicit();
@@ -817,7 +840,7 @@ impl<'t> DocParser<'t> {
                 let scale = [2.0, 1.6, 1.32, 1.14, 1.0, 0.92][(lv as usize - 1).min(5)];
                 let color = if lv == 6 { self.th.weak } else { self.th.heading };
                 self.inline = Some(InlineBuilder::new(Base { size: self.th.size * scale, bold: true, color }, self.sup_sub));
-                self.leaf = Leaf::Heading { level: lv, id: id.map(|s| s.to_string()) };
+                self.leaf = Leaf::Heading { level: lv, id: id.map(|s| s.to_string()), offset: start_offset };
             }
             Tag::BlockQuote(kind) => {
                 self.flush_implicit();
@@ -892,11 +915,11 @@ impl<'t> DocParser<'t> {
             }
             TagEnd::Heading(_) => {
                 let leaf = std::mem::replace(&mut self.leaf, Leaf::None);
-                if let (Some(ib), Leaf::Heading { level, id }) = (self.inline.take(), leaf) {
+                if let (Some(ib), Leaf::Heading { level, id, offset }) = (self.inline.take(), leaf) {
                     let inline = ib.finish(self.th);
                     let text = inline.plain.trim().to_string();
                     let anchor = self.unique_anchor(id.unwrap_or_else(|| slugify(&text)));
-                    self.headings.push(Heading { level, text, anchor: anchor.clone() });
+                    self.headings.push(Heading { level, text, anchor: anchor.clone(), byte_offset: offset });
                     self.push_block(Block::Heading { level, inline, anchor });
                 }
                 self.implicit = false;
@@ -1007,6 +1030,26 @@ impl<'t> DocParser<'t> {
             })
             .collect();
         footnotes.sort_by_key(|f| f.number);
-        Doc { blocks, headings: self.headings, footnotes }
+        Doc { blocks, block_ranges: self.root_ranges, headings: self.headings, footnotes }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn block_ranges_and_heading_offsets_match_source() {
+        let src = "# 标题一\n\n第一段\n\n```rust\nlet x = 1;\n```\n\n## 标题二\n";
+        let th = Theme::new(false, 16.0);
+        let doc = parse(src, &th, &ParseOptions { sup_sub: false, front_matter: true });
+        assert_eq!(doc.blocks.len(), 4);
+        assert_eq!(doc.block_ranges.len(), 4);
+        assert_eq!(&src[doc.block_ranges[0].clone()], "# 标题一\n");
+        assert_eq!(&src[doc.block_ranges[1].clone()], "第一段\n");
+        assert!(src[doc.block_ranges[2].clone()].starts_with("```rust"));
+        assert_eq!(doc.headings.len(), 2);
+        assert_eq!(doc.headings[0].byte_offset, 0);
+        assert_eq!(doc.headings[1].byte_offset, src.find("## 标题二").unwrap());
     }
 }

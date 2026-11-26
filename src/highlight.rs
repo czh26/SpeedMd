@@ -1,8 +1,14 @@
-//! 编辑器里的轻量 Markdown 语法高亮（逐行扫描，O(n)，结果按文档版本号缓存）。
+//! 编辑器里的轻量 Markdown 语法高亮（逐行扫描，O(n)，按文档版本号缓存 + 查找匹配高亮叠加）。
 
-use eframe::egui::{text::LayoutJob, Color32, FontId, Stroke, TextFormat};
+use eframe::egui::{
+    text::{ByteIndex, LayoutJob, LayoutSection},
+    Color32, FontId, Stroke, TextFormat,
+};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::ops::Range;
+
+const MAX_FIND_HIGHLIGHTS: usize = 10_000;
 
 struct Palette {
     normal: Color32,
@@ -52,17 +58,37 @@ impl Palette {
 pub struct Highlighter {
     key: u64,
     job: LayoutJob,
+    overlay_cache_key: u64,
+    overlay_job: LayoutJob,
 }
 
 impl Default for Highlighter {
     fn default() -> Self {
-        Self { key: u64::MAX, job: LayoutJob::default() }
+        Self {
+            key: u64::MAX,
+            job: LayoutJob::default(),
+            overlay_cache_key: u64::MAX,
+            overlay_job: LayoutJob::default(),
+        }
     }
 }
 
+pub struct FindOverlay<'a> {
+    pub matches: &'a [Range<usize>],
+    pub current: Option<usize>,
+    pub key: u64,
+}
+
 impl Highlighter {
-    /// 返回高亮后的 LayoutJob；版本号/主题/字号不变时直接复用缓存。
-    pub fn highlight(&mut self, version: u64, text: &str, dark: bool, font: &FontId) -> LayoutJob {
+    /// 返回高亮后的 LayoutJob；版本号/主题/字号不变时直接复用缓存，并叠加查找匹配背景色。
+    pub fn highlight(
+        &mut self,
+        version: u64,
+        text: &str,
+        dark: bool,
+        font: &FontId,
+        overlay: Option<FindOverlay<'_>>,
+    ) -> LayoutJob {
         let mut h = DefaultHasher::new();
         version.hash(&mut h);
         dark.hash(&mut h);
@@ -72,9 +98,103 @@ impl Highlighter {
         if key != self.key {
             self.job = build(text, dark, font);
             self.key = key;
+            self.overlay_cache_key = u64::MAX;
         }
-        self.job.clone()
+        let Some(ov) = overlay.filter(|o| !o.matches.is_empty()) else {
+            return self.job.clone();
+        };
+        let mut oh = DefaultHasher::new();
+        (key, ov.key, ov.current).hash(&mut oh);
+        let ok = oh.finish();
+        if ok != self.overlay_cache_key {
+            self.overlay_job = apply_find_overlay(&self.job, ov.matches, ov.current, dark);
+            self.overlay_cache_key = ok;
+        }
+        self.overlay_job.clone()
     }
+}
+
+/// 以 O(sections + matches) 线性切分 `LayoutSection` 并叠加查找背景色（最多着色前 1 万处匹配）。
+pub fn apply_find_overlay(
+    base: &LayoutJob,
+    matches: &[Range<usize>],
+    current_match: Option<usize>,
+    dark: bool,
+) -> LayoutJob {
+    if matches.is_empty() || base.sections.is_empty() {
+        return base.clone();
+    }
+    let limit = matches.len().min(MAX_FIND_HIGHLIGHTS);
+    let capped = &matches[..limit];
+
+    let match_bg = if dark {
+        Color32::from_rgb(0x5c, 0x4b, 0x16)
+    } else {
+        Color32::from_rgb(0xff, 0xe8, 0x7a)
+    };
+    let cur_bg = if dark {
+        Color32::from_rgb(0x9a, 0x54, 0x12)
+    } else {
+        Color32::from_rgb(0xff, 0xa9, 0x40)
+    };
+
+    let mut out = Vec::with_capacity(base.sections.len() + capped.len().min(4096) * 2);
+    let mut mi = 0usize;
+
+    for sec in &base.sections {
+        let s_start = sec.byte_range.start.0;
+        let s_end = sec.byte_range.end.0;
+        let mut pos = s_start;
+        let mut first_piece = true;
+
+        while mi < capped.len() && capped[mi].end <= pos {
+            mi += 1;
+        }
+
+        let mut k = mi;
+        while k < capped.len() && capped[k].start < s_end {
+            let m = &capped[k];
+            if m.start > pos {
+                out.push(LayoutSection {
+                    leading_space: if first_piece { sec.leading_space } else { 0.0 },
+                    byte_range: ByteIndex(pos)..ByteIndex(m.start),
+                    format: sec.format.clone(),
+                });
+                first_piece = false;
+                pos = m.start;
+            }
+            let overlap_end = m.end.min(s_end);
+            if overlap_end > pos {
+                let mut fmt = sec.format.clone();
+                fmt.background = if current_match == Some(k) { cur_bg } else { match_bg };
+                out.push(LayoutSection {
+                    leading_space: if first_piece { sec.leading_space } else { 0.0 },
+                    byte_range: ByteIndex(pos)..ByteIndex(overlap_end),
+                    format: fmt,
+                });
+                first_piece = false;
+                pos = overlap_end;
+            }
+            if m.end <= s_end {
+                k += 1;
+                mi = k;
+            } else {
+                break;
+            }
+        }
+
+        if pos < s_end {
+            out.push(LayoutSection {
+                leading_space: if first_piece { sec.leading_space } else { 0.0 },
+                byte_range: ByteIndex(pos)..ByteIndex(s_end),
+                format: sec.format.clone(),
+            });
+        }
+    }
+
+    let mut job = base.clone();
+    job.sections = out;
+    job
 }
 
 fn fmt(font: &FontId, color: Color32) -> TextFormat {
@@ -296,4 +416,38 @@ fn inline(job: &mut LayoutJob, s: &str, p: &Palette, font: &FontId, code_fmt: &T
         }
     }
     push(job, &s[start..], normal);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_overlay_keeps_section_invariants() {
+        let mut hl = Highlighter::default();
+        let text = "# Title\nHello **world** hello\n";
+        let matches = vec![8..13, 24..29];
+        let job = hl.highlight(
+            1,
+            text,
+            false,
+            &FontId::monospace(15.0),
+            Some(FindOverlay { matches: &matches, current: Some(1), key: 42 }),
+        );
+        assert_eq!(job.text, text);
+        let mut cursor = 0usize;
+        for sec in &job.sections {
+            assert_eq!(sec.byte_range.start.0, cursor);
+            assert!(sec.byte_range.start.0 <= sec.byte_range.end.0);
+            cursor = sec.byte_range.end.0;
+        }
+        assert_eq!(cursor, text.len());
+        let colored: Vec<_> = job
+            .sections
+            .iter()
+            .filter(|s| s.format.background != Color32::TRANSPARENT)
+            .map(|s| s.byte_range.start.0..s.byte_range.end.0)
+            .collect();
+        assert_eq!(colored, vec![8..13, 24..29]);
+    }
 }

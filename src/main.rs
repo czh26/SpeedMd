@@ -4,6 +4,7 @@ mod app;
 mod commands;
 mod document;
 mod editor;
+mod find;
 mod fonts;
 mod highlight;
 mod keymap;

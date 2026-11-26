@@ -20,12 +20,20 @@ pub struct Actions {
     pub open_file: Option<PathBuf>,
 }
 
+#[derive(Clone, Copy)]
+pub struct PreviewOptions<'a> {
+    pub base_dir: Option<&'a Path>,
+    pub code_line_numbers: bool,
+}
+
 #[derive(Default)]
 pub struct PreviewState {
     doc_key: u64,
     heights: Vec<Option<f32>>,
     heights_width: f32,
     scroll_to: Option<String>,
+    scroll_to_block: Option<usize>,
+    pub top_block_idx: usize,
 }
 
 struct Rcx<'a> {
@@ -36,6 +44,7 @@ struct Rcx<'a> {
     actions: &'a mut Actions,
     base_dir: Option<&'a Path>,
     list_depth: usize,
+    code_line_numbers: bool,
 }
 
 impl Rcx<'_> {
@@ -94,16 +103,29 @@ impl PreviewState {
         self.scroll_to = Some(anchor);
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, uid: u64, doc: &Doc, th: &Theme, doc_key: u64, base_dir: Option<&Path>) -> Actions {
+    pub fn scroll_to_block(&mut self, idx: usize) {
+        self.scroll_to_block = Some(idx);
+    }
+
+    pub fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        uid: u64,
+        doc: &Doc,
+        th: &Theme,
+        doc_key: u64,
+        opts: PreviewOptions<'_>,
+    ) -> Actions {
         if self.doc_key != doc_key {
             self.doc_key = doc_key;
             self.heights.clear();
         }
 
-        let Self { heights, heights_width, scroll_to, .. } = self;
+        let Self { heights, heights_width, scroll_to, scroll_to_block, top_block_idx, .. } = self;
         let mut actions = Actions::default();
         let mut nav: Option<String> = None;
-        let force = scroll_to.is_some();
+        let force = scroll_to.is_some() || scroll_to_block.is_some();
+        let mut first_visible: Option<usize> = None;
 
         egui::ScrollArea::vertical()
             .id_salt(("preview_scroll", uid))
@@ -125,8 +147,9 @@ impl PreviewState {
                             scroll_to,
                             nav: &mut nav,
                             actions: &mut actions,
-                            base_dir,
+                            base_dir: opts.base_dir,
                             list_depth: 0,
+                            code_line_numbers: opts.code_line_numbers,
                         };
                         for (i, block) in doc.blocks.iter().enumerate() {
                             let y = ui.cursor().top() - origin;
@@ -135,18 +158,34 @@ impl PreviewState {
                                 && (y + h < viewport.top() - 600.0 || y > viewport.bottom() + 600.0)
                             {
                                 ui.allocate_space(vec2(width, h));
+                                if first_visible.is_none() && y + h >= viewport.top() {
+                                    first_visible = Some(i);
+                                }
                                 continue;
                             }
                             let start = ui.cursor().top();
                             render_block(ui, block, &mut rcx, i == 0);
-                            heights[i] = Some(ui.cursor().top() - start);
+                            let end = ui.cursor().top();
+                            heights[i] = Some(end - start);
+                            if first_visible.is_none() && (end - origin) >= viewport.top() {
+                                first_visible = Some(i);
+                            }
+                            if *scroll_to_block == Some(i) {
+                                let rect = Rect::from_x_y_ranges(ui.max_rect().x_range(), start..=end.max(start + 1.0));
+                                ui.scroll_to_rect(rect, Some(Align::TOP));
+                                *scroll_to_block = None;
+                            }
                         }
                         render_footnotes(ui, &mut rcx);
-                        // 完整渲染过一遍后，找不到的锚点直接丢弃
+                        // 完整渲染过一遍后，找不到的锚点 / 块直接丢弃
                         *rcx.scroll_to = None;
+                        *scroll_to_block = None;
                     });
             });
 
+        if let Some(idx) = first_visible {
+            *top_block_idx = idx;
+        }
         if let Some(a) = nav {
             self.scroll_to = Some(a);
             ui.ctx().request_repaint();
@@ -190,7 +229,7 @@ fn render_block(ui: &mut egui::Ui, block: &Block, rcx: &mut Rcx, first: bool) {
         Block::Paragraph(inline) => {
             render_inline(ui, inline, rcx);
         }
-        Block::Code { lang, code } => render_code(ui, lang, code, th),
+        Block::Code { lang, code } => render_code(ui, lang, code, th, rcx.code_line_numbers),
         Block::Quote { kind, blocks } => {
             let (bar, title) = match kind {
                 Some(k) => {
@@ -256,24 +295,95 @@ fn alert_style(k: BlockQuoteKind) -> (Color32, &'static str, &'static str) {
     }
 }
 
-fn render_code(ui: &mut egui::Ui, lang: &str, code: &str, th: &Theme) {
-    let theme = if th.dark {
-        egui_extras::syntax_highlighting::CodeTheme::dark(th.size * 0.88)
+fn is_supported_highlight_lang(lang: &str) -> bool {
+    matches!(
+        lang.to_ascii_lowercase().as_str(),
+        "c" | "h"
+            | "hpp"
+            | "cpp"
+            | "c++"
+            | "js"
+            | "javascript"
+            | "jsx"
+            | "mjs"
+            | "ts"
+            | "typescript"
+            | "tsx"
+            | "json"
+            | "jsonc"
+            | "json5"
+            | "py"
+            | "python"
+            | "rs"
+            | "rust"
+            | "bash"
+            | "sh"
+            | "shell"
+            | "zsh"
+            | "sql"
+            | "toml"
+            | "yaml"
+            | "yml"
+    )
+}
+
+fn render_code(ui: &mut egui::Ui, lang: &str, code: &str, th: &Theme, line_numbers: bool) {
+    let code_size = th.size * 0.88;
+    let line_h = th.size * 1.45;
+    let font_id = FontId::monospace(code_size);
+    let mut job = if is_supported_highlight_lang(lang) {
+        let theme = if th.dark {
+            egui_extras::syntax_highlighting::CodeTheme::dark(code_size)
+        } else {
+            egui_extras::syntax_highlighting::CodeTheme::light(code_size)
+        };
+        egui_extras::syntax_highlighting::highlight(ui.ctx(), ui.style(), &theme, code, lang)
     } else {
-        egui_extras::syntax_highlighting::CodeTheme::light(th.size * 0.88)
+        egui::text::LayoutJob::simple(code.to_string(), font_id.clone(), th.text, f32::INFINITY)
     };
-    let mut job = egui_extras::syntax_highlighting::highlight(ui.ctx(), ui.style(), &theme, code, lang);
     for s in &mut job.sections {
-        s.format.line_height = Some(th.size * 1.45);
+        s.format.line_height = Some(line_h);
     }
+    job.wrap.max_width = f32::INFINITY;
+
     let resp = egui::Frame::new()
         .fill(th.code_bg)
         .corner_radius(6)
         .inner_margin(egui::Margin { left: 14, right: 14, top: 12, bottom: 12 })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            job.wrap.max_width = ui.available_width();
-            ui.add(egui::Label::new(job).selectable(true));
+            if line_numbers {
+                let n_lines = code.split('\n').count().max(1);
+                let digits = n_lines.to_string().len().max(2);
+                let nums: String = (1..=n_lines)
+                    .map(|n| format!("{n:>digits$}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let mut num_job = egui::text::LayoutJob::simple(nums, font_id, th.weak, f32::INFINITY);
+                for s in &mut num_job.sections {
+                    s.format.line_height = Some(line_h);
+                }
+                ui.horizontal_top(|ui| {
+                    ui.add(egui::Label::new(num_job).selectable(false));
+                    ui.add_space(8.0);
+                    let x = ui.cursor().left();
+                    let top = ui.cursor().top();
+                    let h = n_lines as f32 * line_h;
+                    ui.painter().vline(x, top..=(top + h), Stroke::new(1.0, th.border));
+                    ui.add_space(10.0);
+                    egui::ScrollArea::horizontal()
+                        .id_salt(("code_scroll", code.as_ptr() as usize))
+                        .show(ui, |ui| {
+                            ui.add(egui::Label::new(job).selectable(true));
+                        });
+                });
+            } else {
+                egui::ScrollArea::horizontal()
+                    .id_salt(("code_scroll", code.as_ptr() as usize))
+                    .show(ui, |ui| {
+                        ui.add(egui::Label::new(job).selectable(true));
+                    });
+            }
         })
         .response;
 

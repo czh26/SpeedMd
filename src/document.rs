@@ -1,5 +1,6 @@
 //! 单文档状态与解析/统计缓存。
 
+use crate::find::FindState;
 use crate::highlight::Highlighter;
 use crate::markdown::{self, Doc, ParseOptions, Theme};
 use crate::preview::PreviewState;
@@ -7,6 +8,7 @@ use crate::settings::ViewMode;
 use eframe::egui;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -108,8 +110,9 @@ pub struct Document {
     pub stats: Stats,
     pub preview: PreviewState,
     pub hl: Highlighter,
-    #[allow(dead_code)]
-    pub pending_cursor: Option<usize>,
+    pub find: FindState,
+    pub pending_selection: Option<Range<usize>>,
+    pub scroll_to_selection: bool,
     pub view_before_source: Option<ViewMode>,
 }
 
@@ -148,7 +151,9 @@ impl Document {
             stats: Stats::default(),
             preview: PreviewState::default(),
             hl: Highlighter::default(),
-            pending_cursor: None,
+            find: FindState::default(),
+            pending_selection: None,
+            scroll_to_selection: false,
             view_before_source: None,
         }
     }

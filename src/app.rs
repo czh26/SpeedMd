@@ -2,14 +2,21 @@
 
 use crate::commands::Command;
 use crate::document::Document;
-use crate::editor;
+use crate::editor::{self, EditorConfig};
+use crate::find::{self, FindAction};
 use crate::keymap::Keymap;
 use crate::markdown::ParseOptions;
+use crate::preview::PreviewOptions;
 use crate::settings::{Settings, SidebarTab, ViewMode};
 use crate::tabs::{self, TabAction};
 use crate::winutil;
-use eframe::egui::{self, Rect};
+use eframe::egui::{
+    self,
+    text::{CCursor, CCursorRange},
+    Rect,
+};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 pub const APP_NAME: &str = "MdPad";
 const WELCOME: &str = include_str!("welcome.md");
@@ -28,6 +35,26 @@ struct ShotRunner {
     ran_commands: bool,
 }
 
+struct BenchRunner {
+    frame: u32,
+    last_frame_start: Option<Instant>,
+    cpu_ms: Vec<f64>,
+    wall_ms: Vec<f64>,
+    out_path: Option<PathBuf>,
+}
+
+impl BenchRunner {
+    fn new(out_path: Option<PathBuf>) -> Self {
+        Self {
+            frame: 0,
+            last_frame_start: None,
+            cpu_ms: Vec::with_capacity(200),
+            wall_ms: Vec::with_capacity(200),
+            out_path,
+        }
+    }
+}
+
 pub struct MdApp {
     docs: Vec<Document>,
     active: usize,
@@ -41,6 +68,7 @@ pub struct MdApp {
     editor_rect: Rect,
     preview_rect: Rect,
     shot: Option<ShotRunner>,
+    bench: Option<BenchRunner>,
 }
 
 impl MdApp {
@@ -53,6 +81,8 @@ impl MdApp {
         });
 
         let shot_path = std::env::var_os("MDPAD_SCREENSHOT").map(PathBuf::from);
+        let bench_typing = std::env::var("MDPAD_BENCH").as_deref() == Ok("typing");
+        let bench_out = std::env::var_os("MDPAD_BENCH_OUT").map(PathBuf::from);
         let test_cmds: Vec<String> = std::env::var("MDPAD_TEST_COMMANDS")
             .map(|s| s.split(';').map(str::trim).filter(|c| !c.is_empty()).map(str::to_string).collect())
             .unwrap_or_default();
@@ -60,12 +90,14 @@ impl MdApp {
         let mut settings: Settings =
             cc.storage.and_then(|s| eframe::get_value(s, eframe::APP_KEY)).unwrap_or_default();
 
-        let is_shot = shot_path.is_some();
-        if is_shot {
+        let is_test = shot_path.is_some() || bench_typing;
+        if is_test {
             settings = Settings::default();
             match std::env::var("MDPAD_MODE").as_deref() {
                 Ok("edit") => settings.mode = ViewMode::Edit,
                 Ok("preview") => settings.mode = ViewMode::Preview,
+                Ok("split") => settings.mode = ViewMode::Split,
+                _ if bench_typing => settings.mode = ViewMode::Edit,
                 _ => {}
             }
             settings.sup_sub = std::env::var("MDPAD_SUPSUB").is_ok();
@@ -81,6 +113,7 @@ impl MdApp {
 
         let keymap = Keymap::from_overrides(&settings.keybindings);
         let shot = shot_path.map(|path| ShotRunner { path, frames: 0, commands: test_cmds, ran_commands: false });
+        let bench = bench_typing.then(|| BenchRunner::new(bench_out));
 
         let mut app = Self {
             docs: Vec::new(),
@@ -95,14 +128,21 @@ impl MdApp {
             editor_rect: Rect::NOTHING,
             preview_rect: Rect::NOTHING,
             shot,
+            bench,
         };
+
+        if bench_typing {
+            app.docs.push(Document::from_file(PathBuf::from("bench_100k.md"), build_100k_bench_doc()));
+            app.active = 0;
+            return app;
+        }
 
         let cli_args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
         if !cli_args.is_empty() {
             for p in cli_args {
                 app.open_file(p);
             }
-        } else if !is_shot && app.settings.restore_tabs && !app.settings.session_paths.is_empty() {
+        } else if !is_test && app.settings.restore_tabs && !app.settings.session_paths.is_empty() {
             let paths = app.settings.session_paths.clone();
             let saved_active = app.settings.session_active;
             for p in paths {
@@ -123,6 +163,9 @@ impl MdApp {
         if let Ok(anchor) = std::env::var("MDPAD_ANCHOR") {
             app.docs[app.active].preview.scroll_to(anchor);
         }
+        if let Ok(q) = std::env::var("MDPAD_FIND_QUERY") {
+            app.docs[app.active].find.query = q;
+        }
         app
     }
 
@@ -136,6 +179,10 @@ impl MdApp {
 
     fn idx_by_uid(&self, uid: u64) -> Option<usize> {
         self.docs.iter().position(|d| d.uid == uid)
+    }
+
+    fn parse_opts(&self) -> ParseOptions {
+        ParseOptions { sup_sub: self.settings.sup_sub, front_matter: self.settings.front_matter }
     }
 
     // ---------- 文件与标签操作 ----------
@@ -326,6 +373,128 @@ impl MdApp {
         }
     }
 
+    // ---------- 源代码模式与查找替换 ----------
+
+    fn toggle_source_mode(&mut self, ctx: &egui::Context) {
+        let dark = ctx.global_style().visuals.dark_mode;
+        let font_size = self.settings.preview_font_size;
+        let opts = self.parse_opts();
+        let cur_mode = self.settings.mode;
+
+        if cur_mode == ViewMode::Edit {
+            let cur_byte = editor::current_cursor_byte(ctx, self.doc());
+            let doc = self.doc_mut();
+            doc.ensure_parsed(ctx, dark, font_size, &opts, true);
+            if let Some((parsed, _, _)) = doc.parsed.get() {
+                let block_idx = parsed
+                    .block_ranges
+                    .iter()
+                    .rposition(|r| r.start <= cur_byte)
+                    .unwrap_or(0);
+                doc.preview.scroll_to_block(block_idx);
+            }
+            let prev = doc.view_before_source.take().unwrap_or(ViewMode::Split);
+            self.settings.mode = prev;
+        } else {
+            let doc = self.doc_mut();
+            doc.ensure_parsed(ctx, dark, font_size, &opts, true);
+            let top_idx = doc.preview.top_block_idx;
+            if let Some((parsed, _, _)) = doc.parsed.get()
+                && let Some(r) = parsed.block_ranges.get(top_idx)
+            {
+                doc.pending_selection = Some(r.start..r.start);
+                doc.scroll_to_selection = true;
+            }
+            doc.view_before_source = Some(cur_mode);
+            self.settings.mode = ViewMode::Edit;
+        }
+    }
+
+    fn open_find(&mut self, ctx: &egui::Context, replace: bool) {
+        if self.settings.mode == ViewMode::Preview {
+            self.settings.mode = ViewMode::Split;
+        }
+        let sel = editor::current_selection_chars(ctx, self.doc().uid, &self.doc().text);
+        let doc = self.doc_mut();
+        if sel.start < sel.end {
+            let b0 = editor::char_to_byte(&doc.text, sel.start);
+            let b1 = editor::char_to_byte(&doc.text, sel.end);
+            let s = &doc.text[b0..b1];
+            if !s.contains('\n') && s.len() <= 200 {
+                doc.find.query = s.to_string();
+                doc.find.invalidate();
+            }
+        }
+        doc.find.open = true;
+        if replace {
+            doc.find.show_replace = true;
+        }
+        doc.find.focus_query = true;
+        doc.find.ensure_updated(ctx, &doc.text, doc.version, true);
+    }
+
+    fn step_find(&mut self, ctx: &egui::Context, forward: bool) {
+        if self.settings.mode == ViewMode::Preview {
+            self.settings.mode = ViewMode::Split;
+        }
+        let doc = self.doc_mut();
+        if !doc.find.open {
+            doc.find.open = true;
+            doc.find.focus_query = true;
+            doc.find.ensure_updated(ctx, &doc.text, doc.version, true);
+            return;
+        }
+        doc.find.ensure_updated(ctx, &doc.text, doc.version, true);
+        if let Some(r) = doc.find.step(forward) {
+            doc.pending_selection = Some(r);
+            doc.scroll_to_selection = true;
+        }
+    }
+
+    fn replace_current(&mut self, ctx: &egui::Context) {
+        let doc = self.doc_mut();
+        doc.find.ensure_updated(ctx, &doc.text, doc.version, true);
+        let Some(range) = doc.find.current_range() else { return };
+        let spec = doc.find.spec();
+        let rep = doc.find.replacement.clone();
+        let Ok((new_text, new_range)) = find::replace_one(&doc.text, range, &rep, &spec) else { return };
+
+        editor::apply_edit(ctx, doc, |text, _| {
+            *text = new_text;
+            let c0 = editor::byte_to_char(text, new_range.start);
+            let c1 = editor::byte_to_char(text, new_range.end);
+            CCursorRange::two(CCursor::new(c0), CCursor::new(c1))
+        });
+
+        doc.find.ensure_updated(ctx, &doc.text, doc.version, true);
+        doc.find.select_near_offset(new_range.end);
+        if let Some(next_r) = doc.find.current_range() {
+            doc.pending_selection = Some(next_r);
+            doc.scroll_to_selection = true;
+        }
+    }
+
+    fn replace_all(&mut self, ctx: &egui::Context) {
+        let doc = self.doc_mut();
+        doc.find.ensure_updated(ctx, &doc.text, doc.version, true);
+        if doc.find.matches.is_empty() {
+            return;
+        }
+        let spec = doc.find.spec();
+        let rep = doc.find.replacement.clone();
+        let Ok((new_text, count)) = find::replace_all(&doc.text, &doc.find.matches, &rep, &spec) else { return };
+        if count == 0 {
+            return;
+        }
+        editor::apply_edit(ctx, doc, |text, before| {
+            *text = new_text;
+            let max_c = text.chars().count();
+            let c = before.primary.index.0.min(max_c);
+            CCursorRange::one(CCursor::new(c))
+        });
+        doc.find.ensure_updated(ctx, &doc.text, doc.version, true);
+    }
+
     // ---------- 命令分发与字号调节 ----------
 
     fn adjust_font(&mut self, ctx: &egui::Context, delta: Option<f32>) {
@@ -379,16 +548,13 @@ impl MdApp {
             Command::ViewEdit => self.settings.mode = ViewMode::Edit,
             Command::ViewSplit => self.settings.mode = ViewMode::Split,
             Command::ViewPreview => self.settings.mode = ViewMode::Preview,
-            Command::ToggleSourceMode => {
-                let cur = self.settings.mode;
-                if cur == ViewMode::Edit {
-                    let prev = self.doc_mut().view_before_source.take().unwrap_or(ViewMode::Split);
-                    self.settings.mode = prev;
-                } else {
-                    self.doc_mut().view_before_source = Some(cur);
-                    self.settings.mode = ViewMode::Edit;
-                }
-            }
+            Command::ToggleSourceMode => self.toggle_source_mode(ctx),
+            Command::Find => self.open_find(ctx, false),
+            Command::Replace => self.open_find(ctx, true),
+            Command::FindNext => self.step_find(ctx, true),
+            Command::FindPrev => self.step_find(ctx, false),
+            Command::InlineCode => editor::toggle_inline_code(ctx, self.doc_mut()),
+            Command::CodeBlock => editor::insert_code_block(ctx, self.doc_mut()),
             Command::ToggleSidebar => self.settings.sidebar_open = !self.settings.sidebar_open,
             Command::SidebarFiles => {
                 self.settings.sidebar_open = true;
@@ -405,16 +571,9 @@ impl MdApp {
             Command::FontBigger => self.adjust_font(ctx, Some(1.0)),
             Command::FontSmaller => self.adjust_font(ctx, Some(-1.0)),
             Command::FontReset => self.adjust_font(ctx, None),
-            // 后续阶段实现的命令在阶段 1 保留接口不崩溃
             Command::ImportHtml
             | Command::ExportHtml
             | Command::ExportHtmlFragment
-            | Command::Find
-            | Command::Replace
-            | Command::FindNext
-            | Command::FindPrev
-            | Command::InlineCode
-            | Command::CodeBlock
             | Command::CopyAsMarkdown
             | Command::CopyAsHtml
             | Command::PastePlain
@@ -489,6 +648,22 @@ impl MdApp {
                 }
             });
 
+            ui.menu_button("编辑", |ui| {
+                for cmd in [Command::Find, Command::Replace, Command::FindNext, Command::FindPrev] {
+                    if self.menu_btn(ui, cmd) {
+                        pending_cmd = Some(cmd);
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                for cmd in [Command::InlineCode, Command::CodeBlock] {
+                    if self.menu_btn(ui, cmd) {
+                        pending_cmd = Some(cmd);
+                        ui.close();
+                    }
+                }
+            });
+
             ui.menu_button("视图", |ui| {
                 for cmd in [Command::ViewEdit, Command::ViewSplit, Command::ViewPreview, Command::ToggleSourceMode] {
                     if self.menu_btn(ui, cmd) {
@@ -517,6 +692,14 @@ impl MdApp {
                 ui.checkbox(&mut self.settings.sup_sub, "上标 / 下标（^上标^、~下标~）")
                     .on_hover_text("开启后单个 ~ 表示下标，删除线请使用 ~~文本~~");
                 ui.checkbox(&mut self.settings.front_matter, "预览中显示 YAML Front Matter");
+                ui.checkbox(&mut self.settings.code_line_numbers, "代码块显示行号");
+                ui.separator();
+                ui.label(egui::RichText::new("编辑器与标签").strong());
+                ui.checkbox(&mut self.settings.auto_pair, "自动闭合括号与引号");
+                ui.add_enabled(
+                    self.settings.auto_pair,
+                    egui::Checkbox::new(&mut self.settings.auto_pair_in_code, "代码块内也自动补全"),
+                );
                 ui.checkbox(&mut self.settings.restore_tabs, "启动时恢复上次打开的标签");
                 ui.separator();
                 ui.label(egui::RichText::new("字号与缩放").strong());
@@ -596,16 +779,21 @@ impl MdApp {
 
     fn editor_pane(&mut self, ui: &mut egui::Ui) {
         self.editor_rect = ui.max_rect();
-        let font_size = self.settings.editor_font_size;
+        let cfg = EditorConfig {
+            font_size: self.settings.editor_font_size,
+            auto_pair: self.settings.auto_pair,
+            auto_pair_in_code: self.settings.auto_pair_in_code,
+        };
         let doc = self.doc_mut();
-        editor::show(ui, doc, font_size);
+        editor::show(ui, doc, &cfg);
     }
 
     fn preview_pane(&mut self, ui: &mut egui::Ui) {
         self.preview_rect = ui.max_rect();
         let dark = ui.visuals().dark_mode;
         let font_size = self.settings.preview_font_size;
-        let opts = ParseOptions { sup_sub: self.settings.sup_sub, front_matter: self.settings.front_matter };
+        let opts = self.parse_opts();
+        let code_line_numbers = self.settings.code_line_numbers;
         let ctx = ui.ctx().clone();
 
         let actions = {
@@ -613,7 +801,8 @@ impl MdApp {
             doc.ensure_parsed(&ctx, dark, font_size, &opts, true);
             let base = doc.base_dir().map(Path::to_path_buf);
             if let Some((parsed_doc, th, key)) = doc.parsed.get() {
-                doc.preview.ui(ui, doc.uid, parsed_doc, th, key, base.as_deref())
+                let preview_opts = PreviewOptions { base_dir: base.as_deref(), code_line_numbers };
+                doc.preview.ui(ui, doc.uid, parsed_doc, th, key, preview_opts)
             } else {
                 Default::default()
             }
@@ -832,20 +1021,105 @@ impl MdApp {
             }
         }
     }
+
+    fn bench_pre_frame(&mut self) -> Option<Instant> {
+        let b = self.bench.as_mut()?;
+        let now = Instant::now();
+        b.frame += 1;
+        if b.frame > 5 && b.frame <= 205 {
+            if let Some(prev) = b.last_frame_start {
+                b.wall_ms.push(now.duration_since(prev).as_secs_f64() * 1000.0);
+            }
+            b.last_frame_start = Some(now);
+            let ch = if b.frame.is_multiple_of(2) { "a" } else { "字" };
+            let doc = self.doc_mut();
+            let pos = doc.text.len() / 2;
+            let mut safe = pos;
+            while safe > 0 && !doc.text.is_char_boundary(safe) {
+                safe -= 1;
+            }
+            doc.text.insert_str(safe, ch);
+            doc.bump_version();
+            return Some(now);
+        }
+        None
+    }
+
+    fn bench_post_frame(&mut self, ctx: &egui::Context, cpu_start: Option<Instant>) {
+        let chars = self.doc().text.chars().count();
+        let Some(b) = self.bench.as_mut() else { return };
+        if let Some(start) = cpu_start {
+            b.cpu_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+        }
+        if b.frame < 206 {
+            ctx.request_repaint();
+        } else if b.frame == 206 {
+            let report = format_bench_report(chars, &b.cpu_ms, &b.wall_ms);
+            if let Some(p) = &b.out_path {
+                let _ = std::fs::write(p, &report);
+            }
+            println!("{report}");
+            self.allow_close = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+}
+
+fn percentile(sorted: &[f64], p: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let idx = ((sorted.len() - 1) as f64 * p).round() as usize;
+    sorted[idx.min(sorted.len() - 1)]
+}
+
+fn format_bench_report(chars: usize, cpu: &[f64], wall: &[f64]) -> String {
+    let mut cpu_s = cpu.to_vec();
+    let mut wall_s = wall.to_vec();
+    cpu_s.sort_by(f64::total_cmp);
+    wall_s.sort_by(f64::total_cmp);
+    let avg = |v: &[f64]| if v.is_empty() { 0.0 } else { v.iter().sum::<f64>() / v.len() as f64 };
+    format!(
+        "MDPAD_BENCH=typing chars={} samples={}\ncpu_ms:  avg={:.2} p50={:.2} p95={:.2}\nwall_ms: avg={:.2} p50={:.2} p95={:.2}\n",
+        chars,
+        cpu.len(),
+        avg(cpu),
+        percentile(&cpu_s, 0.50),
+        percentile(&cpu_s, 0.95),
+        avg(wall),
+        percentile(&wall_s, 0.50),
+        percentile(&wall_s, 0.95),
+    )
+}
+
+fn build_100k_bench_doc() -> String {
+    let chunk = "## 性能测试章节\n\n这是一段用于测试 **10万字** Markdown 编辑器输入性能的样本，包含 `行内代码`、[示例链接](https://example.com) 与常规中英文混排段落。\n\n- 列表项一：Rust + egui 渲染管线\n- 列表项二：按版本号缓存语法高亮\n\n";
+    let mut s = String::with_capacity(140_000);
+    while s.chars().count() < 100_000 {
+        s.push_str(chunk);
+    }
+    s
 }
 
 impl eframe::App for MdApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let cpu_start = self.bench_pre_frame();
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
         self.handle_input(ctx);
         self.update_title(ctx);
 
-        // 在编辑模式下也保持 200ms 防抖后台更新解析（供后续大纲使用）
+        {
+            let doc = self.doc_mut();
+            if doc.find.open {
+                doc.find.ensure_updated(ctx, &doc.text, doc.version, false);
+            }
+        }
+
         if self.settings.mode == ViewMode::Edit {
             let dark = ui.visuals().dark_mode;
             let font_size = self.settings.preview_font_size;
-            let opts = ParseOptions { sup_sub: self.settings.sup_sub, front_matter: self.settings.front_matter };
+            let opts = self.parse_opts();
             let doc = self.doc_mut();
             doc.ensure_parsed(ctx, dark, font_size, &opts, false);
         }
@@ -859,27 +1133,54 @@ impl eframe::App for MdApp {
 
         egui::CentralPanel::default()
             .frame(egui::Frame::central_panel(&ctx.global_style()).inner_margin(0))
-            .show(ui, |ui| match self.settings.mode {
-                ViewMode::Edit => self.editor_pane(ui),
-                ViewMode::Preview => self.preview_pane(ui),
-                ViewMode::Split => {
-                    ui.columns(2, |cols| {
-                        self.editor_pane(&mut cols[0]);
-                        self.preview_pane(&mut cols[1]);
-                        let x = cols[0].max_rect().right();
-                        let y_range = cols[0].max_rect().y_range();
-                        cols[0].painter().vline(x, y_range, egui::Stroke::new(1.0, cols[0].visuals().widgets.noninteractive.bg_stroke.color));
-                    });
+            .show(ui, |ui| {
+                if self.settings.mode != ViewMode::Preview {
+                    let find_action = find::bar_ui(ui, &mut self.doc_mut().find);
+                    if let Some(act) = find_action {
+                        match act {
+                            FindAction::JumpTo(r) => {
+                                let doc = self.doc_mut();
+                                doc.pending_selection = Some(r);
+                                doc.scroll_to_selection = true;
+                            }
+                            FindAction::ReplaceCurrent => self.replace_current(ctx),
+                            FindAction::ReplaceAll => self.replace_all(ctx),
+                            FindAction::Close => {
+                                let doc = self.doc_mut();
+                                doc.find.open = false;
+                                ctx.memory_mut(|m| m.request_focus(editor::editor_id(doc.uid)));
+                            }
+                        }
+                    }
+                }
+
+                match self.settings.mode {
+                    ViewMode::Edit => self.editor_pane(ui),
+                    ViewMode::Preview => self.preview_pane(ui),
+                    ViewMode::Split => {
+                        ui.columns(2, |cols| {
+                            self.editor_pane(&mut cols[0]);
+                            self.preview_pane(&mut cols[1]);
+                            let x = cols[0].max_rect().right();
+                            let y_range = cols[0].max_rect().y_range();
+                            cols[0].painter().vline(
+                                x,
+                                y_range,
+                                egui::Stroke::new(1.0, cols[0].visuals().widgets.noninteractive.bg_stroke.color),
+                            );
+                        });
+                    }
                 }
             });
 
         self.confirm_dialog(ctx);
         self.error_dialog(ctx);
         self.self_test_screenshot(ctx);
+        self.bench_post_frame(ctx, cpu_start);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        if self.shot.is_none() {
+        if self.shot.is_none() && self.bench.is_none() {
             self.settings.keybindings = self.keymap.to_overrides();
             if self.settings.restore_tabs {
                 let mut paths = Vec::new();
