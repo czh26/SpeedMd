@@ -229,7 +229,7 @@ fn apply_edit(ctx, id, doc, edit: impl FnOnce(&mut String, CCursorRange) -> CCur
 | Q5 | 回收站 | 直接调用 `windows-sys` 的 `SHFileOperationW`（`FOF_ALLOWUNDO`） |
 | Q6 | 预览模式下 `Ctrl+F` | 自动切换到分屏，查找后不自动切回 |
 | Q7 | 恢复标签 | 只恢复有路径的文件，不保存未命名草稿 |
-| Q8 | Git 提交身份 | 仅在本仓库设置 `user.name "25357"`（取自 Windows 用户名；邮箱沿用全局 `2535747780@qq.com`），全局配置不动；如需改名，执行 `git config user.name "新名字"` 即可 |
+| Q8 | Git 提交身份 | 本仓库已由用户初始化并关联远程 `https://github.com/czh26/SpeedMd.git`（`main` 分支，首个提交「初始化」）。仅在本仓库设置 `user.name "czh26"`、`user.email "2535747780@qq.com"`，全局配置不动。阶段 1 不再需要 `git init` |
 | Q9 | 媒体时长 | 只支持 mp4/mov/m4a/wav/flac（自己解析文件头），mp3/ogg/webm 不显示时长 |
 
 > [!IMPORTANT]
