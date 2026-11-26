@@ -576,7 +576,7 @@ pub fn show(ui: &mut egui::Ui, doc: &mut Document, cfg: &EditorConfig) -> Option
                         .min_size(min_sz)
                         .frame(egui::Frame::NONE)
                         .lock_focus(true)
-                        .margin(egui::Margin::symmetric(12, 10))
+                        .margin(egui::Margin::symmetric(12, 8))
                         .layouter(&mut layouter)
                         .show(ui)
                 };

@@ -147,7 +147,7 @@ impl PreviewState {
             .show_viewport(ui, |ui, viewport| {
                 let origin = ui.max_rect().top();
                 egui::Frame::new()
-                    .inner_margin(egui::Margin { left: 28, right: 28, top: 18, bottom: 60 })
+                    .inner_margin(egui::Margin { left: 22, right: 22, top: 12, bottom: 54 })
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
                         let avail_w = ui.available_width();

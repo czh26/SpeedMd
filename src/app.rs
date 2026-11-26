@@ -7,19 +7,22 @@ use crate::find::{self, FindAction};
 use crate::fonts::{self, FontCatalog, FontChoice};
 use crate::keymap::Keymap;
 use crate::manual::{self, InsertMode, ManualAction, ManualState, ManualViewCfg, SettingDep};
-use crate::markdown::ParseOptions;
+use crate::markdown::{bold_family, ParseOptions};
 use crate::preview::PreviewOptions;
 use crate::settings::{Settings, SidebarTab, ViewMode};
 use crate::sidebar::{SidebarAction, SidebarState};
 use crate::stats::{self, StatsOptions};
 use crate::tabs::{self, TabAction};
-use crate::theme::{self, ThemeId};
+use crate::theme::{
+    self, DividerStyle, StatusBarStyle, ThemeId, TopBarBottomLine, PANE_INSET, SIDEBAR_DEFAULT_W, SIDEBAR_MAX_W,
+    SIDEBAR_MIN_W, STATUS_BAR_H, STATUS_PILL_H, TOP_BAR_H, TOP_PILL_H,
+};
 use crate::winutil;
 use eframe::egui::{
     self,
     text::{CCursor, CCursorRange},
-    vec2, Align2, CursorIcon, Popup, PopupCloseBehavior, PopupKind, Rect, RectAlign, Sense, SetOpenCommand, Stroke,
-    StrokeKind,
+    pos2, vec2, Align, Align2, CursorIcon, FontId, Frame, Margin, Popup, PopupCloseBehavior, PopupKind, Rect,
+    RectAlign, Sense, SetOpenCommand, Stroke, StrokeKind, UiBuilder,
 };
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -86,7 +89,7 @@ pub struct MdApp {
     shortcuts_ui: crate::shortcuts_ui::ShortcutsUiState,
     manual: ManualState,
     last_doc_uid: Option<u64>,
-    #[allow(dead_code)] // 阶段 3 顶栏 ≡ 菜单接入
+    sidebar_width: f32,
     open_menu_once: bool,
     open_theme_menu_once: bool,
     shot: Option<ShotRunner>,
@@ -178,6 +181,7 @@ impl MdApp {
             shortcuts_ui: crate::shortcuts_ui::ShortcutsUiState::default(),
             manual: ManualState::default(),
             last_doc_uid: None,
+            sidebar_width: SIDEBAR_DEFAULT_W,
             open_menu_once: false,
             open_theme_menu_once: false,
             shot,
@@ -909,147 +913,332 @@ impl MdApp {
         ui.add_enabled(enabled, btn).clicked()
     }
 
-    fn menu_bar(&mut self, ui: &mut egui::Ui) {
+    fn top_bar_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        let mut pending_cmd: Option<Command> = None;
+        let spec = theme::current(&ctx);
+        let (top_rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), TOP_BAR_H), Sense::hover());
 
-        egui::MenuBar::new().ui(ui, |ui| {
-            ui.menu_button("文件", |ui| {
-                for cmd in [Command::NewTab, Command::New, Command::Open, Command::OpenFolder] {
-                    if self.menu_btn(ui, cmd) {
-                        pending_cmd = Some(cmd);
-                        ui.close();
-                    }
-                }
-                ui.separator();
-                for cmd in [Command::Save, Command::SaveAs, Command::CloseTab, Command::ReopenClosedTab] {
-                    if self.menu_btn(ui, cmd) {
-                        pending_cmd = Some(cmd);
-                        ui.close();
-                    }
-                }
-                ui.separator();
-                for cmd in [Command::ImportHtml, Command::ExportHtml, Command::ExportHtmlFragment] {
-                    if self.menu_btn(ui, cmd) {
-                        pending_cmd = Some(cmd);
-                        ui.close();
-                    }
-                }
-                ui.separator();
-                if self.menu_btn(ui, Command::Quit) {
-                    pending_cmd = Some(Command::Quit);
-                    ui.close();
-                }
-            });
+        let left_zone_w = if self.settings.sidebar_open {
+            self.sidebar_width.clamp(SIDEBAR_MIN_W, SIDEBAR_MAX_W)
+        } else {
+            SIDEBAR_DEFAULT_W
+        };
+        let split_left_active = spec.top_bar_left_bg.is_some() && self.settings.sidebar_open;
+        if let Some(left_bg) = spec.top_bar_left_bg.filter(|_| split_left_active) {
+            let left_bg_r = Rect::from_min_max(top_rect.min, pos2(top_rect.left() + left_zone_w, top_rect.max.y));
+            let right_bg_r = Rect::from_min_max(pos2(top_rect.left() + left_zone_w, top_rect.min.y), top_rect.max);
+            ui.painter().rect_filled(left_bg_r, 0.0, left_bg);
+            ui.painter().rect_filled(right_bg_r, 0.0, spec.top_bar_bg);
+        } else {
+            ui.painter().rect_filled(top_rect, 0.0, spec.top_bar_bg);
+        }
 
-            ui.menu_button("编辑", |ui| {
-                for cmd in [Command::Find, Command::Replace, Command::FindNext, Command::FindPrev] {
-                    if self.menu_btn(ui, cmd) {
-                        pending_cmd = Some(cmd);
-                        ui.close();
-                    }
+        // 底缘线条（01 隐藏、02 红→金 1.5px 渐隐速度线、03–05 1px 结构线）
+        match spec.top_bar_bottom_line {
+            TopBarBottomLine::None => {}
+            TopBarBottomLine::Solid { color, left_override } => {
+                let y = top_rect.bottom() - 0.5;
+                if split_left_active && let Some(lc) = left_override {
+                    let div_x = top_rect.left() + left_zone_w;
+                    ui.painter().hline(top_rect.left()..=div_x, y, Stroke::new(1.0, lc));
+                    ui.painter().hline(div_x..=top_rect.right(), y, Stroke::new(1.0, color));
+                } else {
+                    ui.painter().hline(top_rect.x_range(), y, Stroke::new(1.0, color));
                 }
-                ui.separator();
-                for cmd in [Command::InlineCode, Command::CodeBlock] {
-                    if self.menu_btn(ui, cmd) {
-                        pending_cmd = Some(cmd);
-                        ui.close();
-                    }
-                }
-                ui.separator();
-                for cmd in [Command::PastePlain, Command::CopyAsMarkdown, Command::CopyAsHtml] {
-                    if self.menu_btn(ui, cmd) {
-                        pending_cmd = Some(cmd);
-                        ui.close();
-                    }
-                }
-            });
-
-            ui.menu_button("视图", |ui| {
-                for cmd in [Command::ViewEdit, Command::ViewSplit, Command::ViewPreview, Command::ToggleSourceMode] {
-                    if self.menu_btn(ui, cmd) {
-                        pending_cmd = Some(cmd);
-                        ui.close();
-                    }
-                }
-                ui.separator();
-                for cmd in [Command::ToggleSidebar, Command::SidebarFiles, Command::SidebarArticles, Command::SidebarOutline] {
-                    if self.menu_btn(ui, cmd) {
-                        pending_cmd = Some(cmd);
-                        ui.close();
-                    }
-                }
-                ui.separator();
-                for cmd in [Command::NextTab, Command::PrevTab] {
-                    if self.menu_btn(ui, cmd) {
-                        pending_cmd = Some(cmd);
-                        ui.close();
-                    }
-                }
-                ui.separator();
-                for cmd in [Command::FontBigger, Command::FontSmaller, Command::FontReset] {
-                    if self.menu_btn(ui, cmd) {
-                        pending_cmd = Some(cmd);
-                        ui.close();
-                    }
-                }
-            });
-
-            ui.menu_button("设置", |ui| {
-                if self.menu_btn(ui, Command::OpenSettings) {
-                    pending_cmd = Some(Command::OpenSettings);
-                    ui.close();
-                }
-                if self.menu_btn(ui, Command::OpenShortcuts) {
-                    pending_cmd = Some(Command::OpenShortcuts);
-                    ui.close();
-                }
-                ui.separator();
-                ui.label(egui::RichText::new("Markdown 扩展语法").strong());
-                ui.checkbox(&mut self.settings.sup_sub, "上标 / 下标（^上标^、~下标~）")
-                    .on_hover_text("开启后单个 ~ 表示下标，删除线请使用 ~~文本~~");
-                ui.checkbox(&mut self.settings.front_matter, "预览中显示 YAML Front Matter");
-                ui.checkbox(&mut self.settings.code_line_numbers, "代码块显示行号");
-                ui.separator();
-                ui.label(egui::RichText::new("编辑器与标签").strong());
-                ui.checkbox(&mut self.settings.auto_pair, "自动闭合括号与引号");
-                ui.add_enabled(
-                    self.settings.auto_pair,
-                    egui::Checkbox::new(&mut self.settings.auto_pair_in_code, "代码块内也自动补全"),
+            }
+            TopBarBottomLine::Gradient { left, right, width } => {
+                theme::paint_horizontal_gradient_line(
+                    ui.painter(),
+                    top_rect.left(),
+                    top_rect.right(),
+                    top_rect.bottom() - width,
+                    width,
+                    left,
+                    right,
                 );
-                ui.checkbox(&mut self.settings.restore_tabs, "启动时恢复上次打开的标签");
-            });
+            }
+        }
 
-            ui.menu_button("帮助", |ui| {
-                if self.menu_btn(ui, Command::OpenManual) {
-                    pending_cmd = Some(Command::OpenManual);
-                    ui.close();
-                }
-            });
+        // 左区（220px 或侧栏等宽）：徽标 + MdPad 字标 + ≡ 菜单钮
+        let left_rect = Rect::from_min_size(top_rect.min, vec2(left_zone_w, TOP_BAR_H));
+        let left_fg = if split_left_active { spec.top_bar_left_fg } else { spec.text_fg };
+        let left_hover = if split_left_active { spec.sidebar.hover_bg } else { spec.hover_bg };
 
-            let is_manual = self.doc().is_manual;
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                self.theme_toggle_button(ui);
-                ui.separator();
-                ui.add_enabled_ui(!is_manual, |ui| {
-                    let mode = &mut self.settings.mode;
-                    ui.selectable_value(mode, ViewMode::Preview, "预览");
-                    ui.selectable_value(mode, ViewMode::Split, "分屏");
-                    ui.selectable_value(mode, ViewMode::Edit, "编辑");
+        let badge_rect = Rect::from_min_size(pos2(left_rect.left() + 14.0, left_rect.center().y - 11.0), vec2(22.0, 22.0));
+        theme::paint_brand_badge(ui.painter(), badge_rect, spec);
+        ui.painter().text(
+            pos2(badge_rect.right() + 8.0, left_rect.center().y),
+            Align2::LEFT_CENTER,
+            APP_NAME,
+            FontId::new(15.5, bold_family()),
+            left_fg,
+        );
+
+        let menu_btn_rect = Rect::from_min_size(pos2(left_rect.right() - 36.0, left_rect.center().y - 14.0), vec2(28.0, 28.0));
+        let menu_resp = ui.interact(menu_btn_rect, ui.make_persistent_id("top_hamburger_menu"), Sense::click());
+        if menu_resp.hovered() {
+            ui.painter().rect_filled(menu_btn_rect, 6.0, left_hover);
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        }
+        let bar_stroke = Stroke::new(1.6, left_fg);
+        for dy in [-4.5_f32, 0.0, 4.5] {
+            ui.painter().line_segment(
+                [
+                    pos2(menu_btn_rect.center().x - 6.5, menu_btn_rect.center().y + dy),
+                    pos2(menu_btn_rect.center().x + 6.5, menu_btn_rect.center().y + dy),
+                ],
+                bar_stroke,
+            );
+        }
+
+        let menu_open_cmd = if self.open_menu_once {
+            self.open_menu_once = false;
+            Some(SetOpenCommand::Bool(true))
+        } else if menu_resp.clicked() {
+            Some(SetOpenCommand::Toggle)
+        } else {
+            None
+        };
+
+        let mut pending_cmd: Option<Command> = None;
+        let mut picked_theme: Option<ThemeId> = None;
+        Popup::menu(&menu_resp)
+            .gap(4.0)
+            .open_memory(menu_open_cmd)
+            .show(|ui| {
+                ui.set_min_width(148.0);
+                ui.menu_button("文件", |ui| {
+                    for cmd in [Command::NewTab, Command::New, Command::Open, Command::OpenFolder] {
+                        if self.menu_btn(ui, cmd) {
+                            pending_cmd = Some(cmd);
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    for cmd in [Command::Save, Command::SaveAs, Command::CloseTab, Command::ReopenClosedTab] {
+                        if self.menu_btn(ui, cmd) {
+                            pending_cmd = Some(cmd);
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    for cmd in [Command::ImportHtml, Command::ExportHtml, Command::ExportHtmlFragment] {
+                        if self.menu_btn(ui, cmd) {
+                            pending_cmd = Some(cmd);
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    if self.menu_btn(ui, Command::Quit) {
+                        pending_cmd = Some(Command::Quit);
+                        ui.close();
+                    }
+                });
+
+                ui.menu_button("编辑", |ui| {
+                    for cmd in [Command::Find, Command::Replace, Command::FindNext, Command::FindPrev] {
+                        if self.menu_btn(ui, cmd) {
+                            pending_cmd = Some(cmd);
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    for cmd in [Command::InlineCode, Command::CodeBlock] {
+                        if self.menu_btn(ui, cmd) {
+                            pending_cmd = Some(cmd);
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    for cmd in [Command::PastePlain, Command::CopyAsMarkdown, Command::CopyAsHtml] {
+                        if self.menu_btn(ui, cmd) {
+                            pending_cmd = Some(cmd);
+                            ui.close();
+                        }
+                    }
+                });
+
+                ui.menu_button("视图", |ui| {
+                    for cmd in [Command::ViewEdit, Command::ViewSplit, Command::ViewPreview, Command::ToggleSourceMode] {
+                        if self.menu_btn(ui, cmd) {
+                            pending_cmd = Some(cmd);
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    for cmd in [Command::ToggleSidebar, Command::SidebarFiles, Command::SidebarArticles, Command::SidebarOutline] {
+                        if self.menu_btn(ui, cmd) {
+                            pending_cmd = Some(cmd);
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    for cmd in [Command::NextTab, Command::PrevTab] {
+                        if self.menu_btn(ui, cmd) {
+                            pending_cmd = Some(cmd);
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    for cmd in [Command::FontBigger, Command::FontSmaller, Command::FontReset] {
+                        if self.menu_btn(ui, cmd) {
+                            pending_cmd = Some(cmd);
+                            ui.close();
+                        }
+                    }
+                });
+
+                ui.menu_button("主题", |ui| {
+                    if self.menu_btn(ui, Command::ToggleDayNight) {
+                        pending_cmd = Some(Command::ToggleDayNight);
+                        ui.close();
+                    }
+                    ui.separator();
+                    for id in ThemeId::ALL {
+                        let selected = self.settings.theme == id;
+                        if ui.selectable_label(selected, id.full_label()).clicked() {
+                            picked_theme = Some(id);
+                            ui.close();
+                        }
+                    }
+                });
+
+                egui::containers::menu::SubMenuButton::new("设置")
+                    .config(egui::containers::menu::MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
+                    .ui(ui, |ui| {
+                        if self.menu_btn(ui, Command::OpenSettings) {
+                            pending_cmd = Some(Command::OpenSettings);
+                            ui.close();
+                        }
+                        if self.menu_btn(ui, Command::OpenShortcuts) {
+                            pending_cmd = Some(Command::OpenShortcuts);
+                            ui.close();
+                        }
+                        ui.separator();
+                        ui.label(egui::RichText::new("Markdown 扩展语法").strong());
+                        ui.checkbox(&mut self.settings.sup_sub, "上标 / 下标（^上标^、~下标~）")
+                            .on_hover_text("开启后单个 ~ 表示下标，删除线请使用 ~~文本~~");
+                        ui.checkbox(&mut self.settings.front_matter, "预览中显示 YAML Front Matter");
+                        ui.checkbox(&mut self.settings.code_line_numbers, "代码块显示行号");
+                        ui.separator();
+                        ui.label(egui::RichText::new("编辑器与标签").strong());
+                        ui.checkbox(&mut self.settings.auto_pair, "自动闭合括号与引号");
+                        ui.add_enabled(
+                            self.settings.auto_pair,
+                            egui::Checkbox::new(&mut self.settings.auto_pair_in_code, "代码块内也自动补全"),
+                        );
+                        ui.checkbox(&mut self.settings.restore_tabs, "启动时恢复上次打开的标签");
+                    });
+
+                ui.menu_button("帮助", |ui| {
+                    if self.menu_btn(ui, Command::OpenManual) {
+                        pending_cmd = Some(Command::OpenManual);
+                        ui.close();
+                    }
                 });
             });
-        });
+        menu_resp.on_hover_text("菜单（文件 / 编辑 / 视图 / 主题 / 设置 / 帮助）");
+
+        // 右区：定宽分段模式胶囊（编辑 | 分屏 | 预览）+ ⚡ 主题切换钮
+        let mode_w = 144.0;
+        let theme_w = 28.0;
+        let right_pad = 12.0;
+        let gap = 8.0;
+        let theme_rect = Rect::from_min_size(
+            pos2(top_rect.right() - right_pad - theme_w, top_rect.center().y - TOP_PILL_H * 0.5),
+            vec2(theme_w, TOP_PILL_H),
+        );
+        let mode_rect = Rect::from_min_size(
+            pos2(theme_rect.left() - gap - mode_w, top_rect.center().y - TOP_PILL_H * 0.5),
+            vec2(mode_w, TOP_PILL_H),
+        );
+
+        self.paint_mode_switch(ui, mode_rect, spec);
+        self.theme_toggle_button_at(ui, theme_rect);
+
+        // 中区：水平滚动多文档标签栏（03 下激活标签直通 top_rect.bottom()）
+        let center_rect = Rect::from_min_max(
+            pos2(left_rect.right() + 8.0, top_rect.top()),
+            pos2(mode_rect.left() - 10.0, top_rect.bottom()),
+        );
+        if center_rect.width() > 24.0 {
+            let mut center_ui = ui.new_child(
+                UiBuilder::new()
+                    .max_rect(center_rect)
+                    .layout(egui::Layout::left_to_right(Align::Center)),
+            );
+            center_ui.set_clip_rect(ui.clip_rect().intersect(center_rect));
+            self.tab_bar(&mut center_ui, top_rect.bottom());
+        }
 
         if let Some(cmd) = pending_cmd {
             self.run_command(&ctx, cmd);
         }
+        if let Some(id) = picked_theme {
+            self.set_theme(&ctx, id);
+        }
     }
 
-    fn theme_toggle_button(&mut self, ui: &mut egui::Ui) {
+    fn paint_mode_switch(&mut self, ui: &mut egui::Ui, rect: Rect, spec: &theme::ThemeSpec) {
+        let ms = &spec.mode_switch;
+        let is_manual = self.doc().is_manual;
+        ui.painter().add(ms.container_shadow.as_shape(rect, ms.outer_radius));
+        ui.painter().rect_filled(rect, ms.outer_radius, ms.container_bg);
+        ui.painter().rect_stroke(rect, ms.outer_radius, ms.container_stroke, StrokeKind::Inside);
+
+        let items = [
+            (ViewMode::Edit, "编辑"),
+            (ViewMode::Split, "分屏"),
+            (ViewMode::Preview, "预览"),
+        ];
+        let seg_w = rect.width() / 3.0;
+        for (idx, (mode_val, label)) in items.iter().enumerate() {
+            let seg_r = Rect::from_min_size(pos2(rect.left() + idx as f32 * seg_w, rect.top()), vec2(seg_w, rect.height()));
+            let sense = if is_manual { Sense::hover() } else { Sense::click() };
+            let resp = ui.interact(seg_r, ui.make_persistent_id(("mode_seg", label)), sense);
+            let active = !is_manual && self.settings.mode == *mode_val;
+
+            let inner_r = seg_r.shrink(2.5);
+            if active {
+                ui.painter().rect_filled(inner_r, ms.inner_radius, ms.active_bg);
+                ui.painter().rect_stroke(inner_r, ms.inner_radius, ms.active_stroke, StrokeKind::Inside);
+            } else if !is_manual && resp.hovered() {
+                ui.painter().rect_filled(inner_r, ms.inner_radius, spec.hover_bg);
+            }
+            if !is_manual && resp.hovered() {
+                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            }
+            if idx > 0 {
+                let prev_active = !is_manual && self.settings.mode == items[idx - 1].0;
+                if !active && !prev_active {
+                    ui.painter().vline(
+                        seg_r.left(),
+                        (rect.top() + 6.0)..=(rect.bottom() - 6.0),
+                        Stroke::new(1.0, spec.border),
+                    );
+                }
+            }
+
+            let fg = if is_manual {
+                spec.disabled_fg
+            } else if active {
+                ms.active_fg
+            } else {
+                ms.inactive_fg
+            };
+            let font = if active { FontId::new(12.5, bold_family()) } else { FontId::proportional(12.5) };
+            ui.painter().text(seg_r.center(), Align2::CENTER_CENTER, label, font, fg);
+            if !is_manual && resp.clicked() {
+                self.settings.mode = *mode_val;
+            }
+        }
+    }
+
+    fn theme_toggle_button_at(&mut self, ui: &mut egui::Ui, rect: Rect) {
         let ctx = ui.ctx().clone();
         let spec = theme::current(&ctx);
-        let btn_size = vec2(28.0, 26.0);
-        let (rect, resp) = ui.allocate_exact_size(btn_size, Sense::click());
+        let ms = &spec.mode_switch;
+        let resp = ui.interact(rect, ui.make_persistent_id("top_theme_toggle"), Sense::click());
         if resp.hovered() {
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
         }
@@ -1058,11 +1247,11 @@ impl MdApp {
         } else if resp.hovered() {
             spec.hover_bg
         } else {
-            spec.surface_bg
+            ms.container_bg
         };
-        ui.painter().add(spec.mode_switch.container_shadow.as_shape(rect, 8));
-        ui.painter().rect_filled(rect, 8.0, bg);
-        ui.painter().rect_stroke(rect, 8.0, Stroke::new(1.0, spec.border), StrokeKind::Inside);
+        ui.painter().add(ms.container_shadow.as_shape(rect, ms.outer_radius));
+        ui.painter().rect_filled(rect, ms.outer_radius, bg);
+        ui.painter().rect_stroke(rect, ms.outer_radius, ms.container_stroke, StrokeKind::Inside);
         theme::paint_bolt(ui.painter(), rect.shrink(6.0), spec.accent);
 
         if resp.clicked() {
@@ -1081,14 +1270,14 @@ impl MdApp {
         let mut picked: Option<ThemeId> = None;
         Popup::from_response(&resp)
             .kind(PopupKind::Menu)
-            .layout(egui::Layout::top_down_justified(egui::Align::Min))
+            .layout(egui::Layout::top_down_justified(Align::Min))
             .style(egui::containers::menu::menu_style)
             .align(RectAlign::BOTTOM_END)
             .gap(4.0)
             .open_memory(open_cmd)
             .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
             .show(|ui| {
-                ui.set_min_width(248.0);
+                ui.set_min_width(256.0);
                 ui.label(egui::RichText::new("选择界面主题").strong());
                 ui.weak("左键 ⚡ 快速切换日/夜 · 右键打开列表");
                 ui.separator();
@@ -1102,10 +1291,9 @@ impl MdApp {
                     } else if active {
                         ui.painter().rect_filled(row_r, 5.0, spec.active_bg);
                     }
-                    // 双色块预览（左底色 / 右强调色）
-                    let sw = Rect::from_min_size(egui::pos2(row_r.left() + 6.0, row_r.center().y - 7.0), vec2(20.0, 14.0));
-                    let left_sw = Rect::from_min_max(sw.min, egui::pos2(sw.center().x, sw.max.y));
-                    let right_sw = Rect::from_min_max(egui::pos2(sw.center().x, sw.min.y), sw.max);
+                    let sw = Rect::from_min_size(pos2(row_r.left() + 6.0, row_r.center().y - 7.0), vec2(20.0, 14.0));
+                    let left_sw = Rect::from_min_max(sw.min, pos2(sw.center().x, sw.max.y));
+                    let right_sw = Rect::from_min_max(pos2(sw.center().x, sw.min.y), sw.max);
                     ui.painter().rect_filled(left_sw, 2.0, s.sidebar.bg);
                     ui.painter().rect_filled(right_sw, 2.0, s.accent);
                     ui.painter().rect_stroke(sw, 3.0, Stroke::new(1.0, spec.border), StrokeKind::Inside);
@@ -1113,17 +1301,17 @@ impl MdApp {
                     let mark = if active { "✓ " } else { "" };
                     let text_col = if active { spec.strong_fg } else { spec.text_fg };
                     ui.painter().text(
-                        egui::pos2(sw.right() + 8.0, row_r.center().y),
+                        pos2(sw.right() + 8.0, row_r.center().y),
                         Align2::LEFT_CENTER,
                         format!("{mark}{}", id.short_label()),
-                        egui::FontId::proportional(13.0),
+                        FontId::proportional(13.0),
                         text_col,
                     );
                     ui.painter().text(
-                        egui::pos2(row_r.right() - 6.0, row_r.center().y),
+                        pos2(row_r.right() - 6.0, row_r.center().y),
                         Align2::RIGHT_CENTER,
                         id.mode_tag(),
-                        egui::FontId::proportional(11.5),
+                        FontId::proportional(11.5),
                         spec.muted_fg,
                     );
                     if row_resp.clicked() {
@@ -1143,8 +1331,8 @@ impl MdApp {
         ));
     }
 
-    fn tab_bar(&mut self, ui: &mut egui::Ui) {
-        let Some(action) = tabs::show(ui, &self.docs, self.active) else { return };
+    fn tab_bar(&mut self, ui: &mut egui::Ui, top_bar_bottom: f32) {
+        let Some(action) = tabs::show(ui, top_bar_bottom, &self.docs, self.active) else { return };
         match action {
             TabAction::Select(i) => {
                 if i < self.docs.len() {
@@ -1173,58 +1361,134 @@ impl MdApp {
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let spec = theme::current(&ctx);
+        let (bar_rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), STATUS_BAR_H), Sense::hover());
+
+        let (base_bg, top_border) = match spec.status_bar {
+            StatusBarStyle::FloatingPill { bar_bg, top_border, .. } => (bar_bg, top_border),
+            StatusBarStyle::FlushTelemetry { bar_bg, top_border, .. } => (bar_bg, Some(top_border)),
+        };
+
+        let left_zone_w = self.sidebar_width.clamp(SIDEBAR_MIN_W, SIDEBAR_MAX_W);
+        let split_left_active = spec.top_bar_left_bg.is_some() && self.settings.sidebar_open;
+        if let Some(left_bg) = spec.top_bar_left_bg.filter(|_| split_left_active) {
+            let l_rect = Rect::from_min_max(bar_rect.min, pos2(bar_rect.left() + left_zone_w, bar_rect.max.y));
+            let r_rect = Rect::from_min_max(pos2(bar_rect.left() + left_zone_w, bar_rect.min.y), bar_rect.max);
+            ui.painter().rect_filled(l_rect, 0.0, left_bg);
+            ui.painter().rect_filled(r_rect, 0.0, base_bg);
+        } else {
+            ui.painter().rect_filled(bar_rect, 0.0, base_bg);
+        }
+        if let Some(tb) = top_border {
+            ui.painter().hline(bar_rect.x_range(), bar_rect.top() + 0.5, Stroke::new(1.0, tb));
+        }
+
+        let left_fg = if split_left_active { spec.sidebar.muted_fg } else { spec.muted_fg };
         let doc = self.doc();
+
         if doc.is_manual {
-            ui.horizontal(|ui| {
-                ui.weak("内置语法说明书 · 只读 · Esc 清空搜索 · 支持复制与一键插入到当前文档");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.weak(format!(
-                        "{} 个分类 · {} 条语法",
-                        self.manual.category_count(),
-                        self.manual.entry_count()
-                    ));
-                });
-            });
+            let left_text = "内置语法说明书 · 只读 · Esc 清空搜索 · 支持复制与一键插入到当前文档";
+            let right_text = format!("{} 个分类 · {} 条语法", self.manual.category_count(), self.manual.entry_count());
+            ui.painter().text(
+                pos2(bar_rect.left() + 12.0, bar_rect.center().y),
+                Align2::LEFT_CENTER,
+                left_text,
+                FontId::proportional(11.5),
+                left_fg,
+            );
+            ui.painter().text(
+                pos2(bar_rect.right() - 12.0, bar_rect.center().y),
+                Align2::RIGHT_CENTER,
+                right_text,
+                FontId::proportional(11.5),
+                spec.muted_fg,
+            );
             return;
         }
+
         let path = doc.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "未保存的新文件".into());
         let dirty = doc.dirty;
         let full = doc.stats.full;
         let sel = doc.stats.sel;
+        let ms = if self.shot.is_some() { 0.2 } else { doc.parsed.last_parse_ms().max(0.1) };
 
         let stats_text = if let Some(s) = sel {
             format!(
-                "已选 {} 字 / 共 {} 字   {} 行",
+                "{ms:.1} ms · 已选 {} 字 / 共 {} 字 · {} 行",
                 stats::format_thousands(s.words),
                 stats::format_thousands(full.words),
                 stats::format_thousands(full.lines)
             )
         } else {
             format!(
-                "{} 行   {} 字   {} 字符",
+                "{ms:.1} ms · {} 行 · {} 字 · {} 字符",
                 stats::format_thousands(full.lines),
                 stats::format_thousands(full.words),
                 stats::format_thousands(full.chars_with_spaces)
             )
         };
 
-        let mut clicked_stats = false;
-        ui.horizontal(|ui| {
-            ui.weak(path);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let r = ui.add(egui::Label::new(egui::RichText::new(stats_text).weak()).sense(Sense::click()));
-                if r.hovered() {
-                    ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-                }
-                if r.on_hover_text("点击查看详细字数统计").clicked() {
-                    clicked_stats = true;
-                }
-                if dirty {
-                    ui.colored_label(egui::Color32::from_rgb(0xe0, 0x9a, 0x3e), "● 未保存");
-                }
-            });
-        });
-        if clicked_stats {
+        let pill_font = FontId::proportional(11.5);
+        let text_galley = ui.fonts_mut(|f| f.layout_no_wrap(stats_text.clone(), pill_font.clone(), spec.text_fg));
+        let bolt_w = 12.0;
+        let pill_pad_x = 10.0;
+        let pill_w = pill_pad_x * 2.0 + bolt_w + 5.0 + text_galley.size().x;
+        let pill_rect = Rect::from_min_size(
+            pos2(bar_rect.right() - 12.0 - pill_w, bar_rect.center().y - STATUS_PILL_H * 0.5),
+            vec2(pill_w, STATUS_PILL_H),
+        );
+
+        let left_clip = Rect::from_min_max(bar_rect.min, pos2((pill_rect.left() - 12.0).max(bar_rect.left()), bar_rect.max.y));
+        let clipped = ui.painter().with_clip_rect(left_clip);
+        let path_galley = ui.fonts_mut(|f| f.layout_no_wrap(path, pill_font.clone(), left_fg));
+        let path_x = bar_rect.left() + 12.0;
+        clipped.galley(pos2(path_x, bar_rect.center().y - path_galley.size().y * 0.5), path_galley.clone(), left_fg);
+        if dirty {
+            clipped.text(
+                pos2(path_x + path_galley.size().x + 10.0, bar_rect.center().y),
+                Align2::LEFT_CENTER,
+                "● 未保存",
+                pill_font.clone(),
+                spec.semantic.dirty_dot,
+            );
+        }
+
+        let (pill_fg, bolt_col) = match spec.status_bar {
+            StatusBarStyle::FloatingPill {
+                pill_bg,
+                pill_fg,
+                bolt_color,
+                pill_stroke,
+                pill_shadow,
+                ..
+            } => {
+                ui.painter().add(pill_shadow.as_shape(pill_rect, 11));
+                ui.painter().rect_filled(pill_rect, 11.0, pill_bg);
+                ui.painter().rect_stroke(pill_rect, 11.0, pill_stroke, StrokeKind::Inside);
+                (pill_fg, bolt_color)
+            }
+            StatusBarStyle::FlushTelemetry { bolt_color, text_color, .. } => (text_color, bolt_color),
+        };
+
+        let bolt_rect = Rect::from_min_size(
+            pos2(pill_rect.left() + pill_pad_x, pill_rect.center().y - 6.0),
+            vec2(10.0, 12.0),
+        );
+        theme::paint_bolt(ui.painter(), bolt_rect, bolt_col);
+        ui.painter().text(
+            pos2(bolt_rect.right() + 5.0, pill_rect.center().y),
+            Align2::LEFT_CENTER,
+            stats_text,
+            pill_font,
+            pill_fg,
+        );
+
+        let r = ui.interact(pill_rect, ui.make_persistent_id("status_stats_pill"), Sense::click());
+        if r.hovered() {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        }
+        if r.on_hover_text("点击查看详细字数统计").clicked() {
             self.stats_popup_open = !self.stats_popup_open;
         }
     }
@@ -2010,15 +2274,29 @@ impl eframe::App for MdApp {
         self.sidebar.sync_root(ctx, effective_root.as_deref());
         self.sidebar.poll_watchers(ctx);
 
-        egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
-        egui::Panel::top("tabs").show(ui, |ui| self.tab_bar(ui));
+        if self.settings.sidebar_open {
+            self.sidebar_width = egui::containers::panel::PanelState::load(ctx, ui.make_persistent_id("sidebar"))
+                .map_or(self.sidebar_width, |s| s.size().x)
+                .clamp(SIDEBAR_MIN_W, SIDEBAR_MAX_W);
+        }
+
+        let theme_before_top = self.settings.theme;
+        egui::Panel::top("top_bar")
+            .exact_size(TOP_BAR_H)
+            .show_separator_line(false)
+            .frame(Frame::NONE)
+            .show(ui, |ui| self.top_bar_ui(ui));
+        if self.settings.theme != theme_before_top {
+            *ui.style_mut() = (*ctx.global_style()).clone();
+        }
         if !self.doc().is_manual {
             self.last_doc_uid = Some(self.doc().uid);
         }
-        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
-        if self.jobs.has_banner() {
-            egui::Panel::bottom("jobs_banner").show(ui, |ui| self.jobs.banner_ui(ui));
-        }
+        egui::Panel::bottom("status_bar")
+            .exact_size(STATUS_BAR_H)
+            .show_separator_line(false)
+            .frame(Frame::NONE)
+            .show(ui, |ui| self.status_bar(ui));
 
         if self.settings.sidebar_open {
             let active_path = self.doc().path.clone();
@@ -2041,7 +2319,7 @@ impl eframe::App for MdApp {
                 .map(|(d, _, _)| d.headings.clone())
                 .unwrap_or_default();
 
-            if let Some(act) = self.sidebar.show(
+            let (act_opt, sb_w) = self.sidebar.show(
                 ui,
                 ctx,
                 &mut self.settings.sidebar_tab,
@@ -2049,7 +2327,9 @@ impl eframe::App for MdApp {
                 doc_uid,
                 &headings,
                 top_byte,
-            ) {
+            );
+            self.sidebar_width = sb_w;
+            if let Some(act) = act_opt {
                 match act {
                     SidebarAction::OpenFile(p) => self.open_file(p),
                     SidebarAction::OpenFolder => self.run_command(ctx, Command::OpenFolder),
@@ -2069,8 +2349,16 @@ impl eframe::App for MdApp {
         self.preview_rect = Rect::NOTHING;
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::central_panel(&ctx.global_style()).inner_margin(0))
+            .frame(Frame::NONE.inner_margin(Margin::ZERO))
             .show(ui, |ui| {
+                let spec = theme::current(ctx);
+                let central_rect = ui.available_rect_before_wrap();
+                let bg = match spec.divider {
+                    DividerStyle::GlassInset { chassis_bg, .. } => chassis_bg,
+                    _ => spec.canvas_bg,
+                };
+                ui.painter().rect_filled(central_rect, 0.0, bg);
+
                 if self.doc().is_manual {
                     self.manual_pane(ui);
                     return;
@@ -2095,25 +2383,63 @@ impl eframe::App for MdApp {
                     }
                 }
 
+                let avail = ui.available_rect_before_wrap();
+                let render_pane = |ui: &mut egui::Ui, outer_rect: Rect, body: &mut dyn FnMut(&mut egui::Ui)| {
+                    let inner_rect = outer_rect.shrink(PANE_INSET);
+                    if let DividerStyle::GlassInset {
+                        plate_bg,
+                        rim_stroke,
+                        top_highlight,
+                        radius,
+                        ..
+                    } = spec.divider
+                    {
+                        ui.painter().rect_filled(inner_rect, radius, plate_bg);
+                        ui.painter()
+                            .rect_stroke(inner_rect, radius, Stroke::new(1.0, rim_stroke), StrokeKind::Inside);
+                        ui.painter().hline(
+                            (inner_rect.left() + radius)..=(inner_rect.right() - radius),
+                            inner_rect.top() + 0.6,
+                            Stroke::new(1.0, top_highlight),
+                        );
+                    }
+                    let mut child = ui.new_child(
+                        UiBuilder::new()
+                            .max_rect(inner_rect)
+                            .layout(egui::Layout::top_down(Align::Min)),
+                    );
+                    child.set_clip_rect(ui.clip_rect().intersect(inner_rect));
+                    body(&mut child);
+                };
+
                 match self.settings.mode {
-                    ViewMode::Edit => self.editor_pane(ui),
-                    ViewMode::Preview => self.preview_pane(ui),
+                    ViewMode::Edit => {
+                        render_pane(ui, avail, &mut |ui| self.editor_pane(ui));
+                    }
+                    ViewMode::Preview => {
+                        render_pane(ui, avail, &mut |ui| self.preview_pane(ui));
+                    }
                     ViewMode::Split => {
-                        ui.columns(2, |cols| {
-                            self.editor_pane(&mut cols[0]);
-                            self.preview_pane(&mut cols[1]);
-                            let x = cols[0].max_rect().right();
-                            let y_range = cols[0].max_rect().y_range();
-                            cols[0].painter().vline(
-                                x,
-                                y_range,
-                                egui::Stroke::new(1.0, cols[0].visuals().widgets.noninteractive.bg_stroke.color),
-                            );
-                        });
+                        let mid_x = avail.center().x.round();
+                        let left_rect = Rect::from_min_max(avail.min, pos2(mid_x, avail.max.y));
+                        let right_rect = Rect::from_min_max(pos2(mid_x, avail.min.y), avail.max);
+                        render_pane(ui, left_rect, &mut |ui| self.editor_pane(ui));
+                        render_pane(ui, right_rect, &mut |ui| self.preview_pane(ui));
+
+                        match spec.divider {
+                            DividerStyle::Dotted { color, step } => {
+                                theme::paint_dotted_vline(ui.painter(), mid_x, avail.top(), avail.bottom(), color, step);
+                            }
+                            DividerStyle::Solid(color) => {
+                                ui.painter().vline(mid_x, avail.y_range(), Stroke::new(1.0, color));
+                            }
+                            DividerStyle::GlassInset { .. } => {}
+                        }
                     }
                 }
             });
 
+        self.jobs.floating_banner_ui(ctx);
         self.confirm_dialog(ctx);
         self.error_dialog(ctx);
         self.export_dialog_window(ctx);

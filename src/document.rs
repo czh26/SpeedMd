@@ -95,7 +95,6 @@ impl ParseCache {
         self.cached.as_ref().map(|(d, t)| (&**d, t, self.key))
     }
 
-    #[allow(dead_code)] // 阶段 3 底栏 ⚡ 耗时遥测接入
     pub fn last_parse_ms(&self) -> f32 {
         self.last_parse_ms
     }

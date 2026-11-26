@@ -1,7 +1,11 @@
-//! 多标签页栏 UI、重名消歧、拖拽重排、右键菜单。
+//! 多标签页栏 UI、重名消歧、拖拽重排、右键菜单（5 套主题统一像素骨架）。
 
 use crate::document::Document;
-use eframe::egui::{self, vec2, Align2, Color32, CursorIcon, FontId, Id, Pos2, Rect, Sense, Stroke, StrokeKind};
+use crate::markdown::bold_family;
+use crate::theme::{self, ActiveTabStyle, TAB_H};
+use eframe::egui::{
+    self, pos2, vec2, Align2, Color32, CornerRadius, CursorIcon, FontId, Id, Rect, Sense, Stroke, StrokeKind,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -44,113 +48,113 @@ pub fn tab_titles(docs: &[Document]) -> Vec<String> {
         .collect()
 }
 
-pub fn show(ui: &mut egui::Ui, docs: &[Document], active: usize) -> Option<TabAction> {
+pub fn show(ui: &mut egui::Ui, top_bar_bottom: f32, docs: &[Document], active: usize) -> Option<TabAction> {
     let mut action: Option<TabAction> = None;
     let titles = tab_titles(docs);
-    let dark = ui.visuals().dark_mode;
-    let active_bg = if dark { Color32::from_rgb(0x28, 0x2c, 0x34) } else { Color32::WHITE };
-    let idle_bg = if dark { Color32::from_rgb(0x1d, 0x20, 0x26) } else { Color32::from_rgb(0xed, 0xef, 0xf2) };
-    let hover_bg = if dark { Color32::from_rgb(0x23, 0x27, 0x2e) } else { Color32::from_rgb(0xe2, 0xe6, 0xec) };
-    let border_col = ui.visuals().widgets.noninteractive.bg_stroke.color;
-    let accent = ui.visuals().selection.bg_fill;
-    let text_col = ui.visuals().text_color();
-    let weak_col = ui.visuals().weak_text_color();
+    let spec = theme::current(ui.ctx());
+    let tc = &spec.tabs;
 
     let drag_id = Id::unique("tabs_drag_state");
-    let mut drag = ui.ctx().data_mut(|d| d.get_temp::<DragState>(drag_id).map(|s| s.dragging_uid).unwrap_or(None));
+    let mut drag = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<DragState>(drag_id).map(|s| s.dragging_uid).unwrap_or(None));
     let mut rects: Vec<Rect> = Vec::with_capacity(docs.len());
 
     egui::ScrollArea::horizontal()
         .id_salt("tabs_scroll")
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                let tab_h = 26.0;
                 let font = FontId::proportional(13.0);
+                let active_font = FontId::new(13.0, bold_family());
 
                 for (i, doc) in docs.iter().enumerate() {
                     let is_active = i == active;
                     let prefix = if doc.dirty { "● " } else { "" };
                     let label = format!("{prefix}{}", titles[i]);
-                    let galley = ui.fonts_mut(|f| f.layout_no_wrap(label.clone(), font.clone(), text_col));
+                    let measure_font = if is_active { &active_font } else { &font };
+                    let galley = ui.fonts_mut(|f| f.layout_no_wrap(label, measure_font.clone(), tc.active_fg));
                     let title_w = galley.size().x.clamp(48.0, 220.0);
                     let close_w = 18.0;
                     let total_w = title_w + close_w + 18.0;
 
-                    let (pill_rect, _) = ui.allocate_exact_size(vec2(total_w, tab_h), Sense::hover());
+                    let (pill_rect, _) = ui.allocate_exact_size(vec2(total_w, TAB_H), Sense::hover());
                     rects.push(pill_rect);
 
-                    let title_rect = Rect::from_min_size(pill_rect.min, vec2(total_w - close_w - 4.0, tab_h));
+                    let title_rect = Rect::from_min_size(pill_rect.min, vec2(total_w - close_w - 4.0, TAB_H));
                     let close_rect = Rect::from_min_size(
-                        Pos2::new(pill_rect.right() - close_w - 4.0, pill_rect.top()),
-                        vec2(close_w, tab_h),
+                        pos2(pill_rect.right() - close_w - 4.0, pill_rect.top()),
+                        vec2(close_w, TAB_H),
                     );
 
                     let title_resp = ui.interact(title_rect, Id::unique(("tab_title", doc.uid)), Sense::click_and_drag());
                     let close_resp = ui.interact(close_rect, Id::unique(("tab_close", doc.uid)), Sense::click());
-
                     let hovered = title_resp.hovered() || close_resp.hovered();
-                    let bg = if is_active {
-                        active_bg
-                    } else if hovered {
-                        hover_bg
-                    } else {
-                        idle_bg
-                    };
-                    ui.painter().rect_filled(pill_rect, 4.0, bg);
+
+                    // 按主题材质策略绘制标签底板（保证 pill_rect 与文字坐标 1:1 零跳动）
                     if is_active {
-                        ui.painter().rect_stroke(pill_rect, 4.0, Stroke::new(1.0, border_col), StrokeKind::Inside);
-                        ui.painter().hline(
-                            (pill_rect.left() + 4.0)..=(pill_rect.right() - 4.0),
-                            pill_rect.top() + 1.0,
-                            Stroke::new(2.0, accent),
-                        );
+                        paint_active_tab(ui.painter(), pill_rect, top_bar_bottom, spec);
+                    } else if hovered {
+                        ui.painter().rect_filled(pill_rect, 7.0, tc.hover_bg);
+                    } else if tc.idle_bg != Color32::TRANSPARENT {
+                        ui.painter().rect_filled(pill_rect, 7.0, tc.idle_bg);
                     }
 
-                    let text_pos = Pos2::new(pill_rect.left() + 8.0, pill_rect.center().y - galley.size().y * 0.5);
+                    let fg = if is_active { tc.active_fg } else { tc.idle_fg };
+                    let text_font = if is_active { active_font.clone() } else { font.clone() };
                     let clipped = ui.painter().with_clip_rect(title_rect.shrink2(vec2(4.0, 0.0)));
                     if doc.dirty {
+                        let dot_col = if is_active { tc.dirty_active } else { tc.dirty_idle };
                         clipped.text(
-                            Pos2::new(pill_rect.left() + 8.0, pill_rect.center().y),
+                            pos2(pill_rect.left() + 9.0, pill_rect.center().y),
                             Align2::LEFT_CENTER,
                             "●",
-                            FontId::proportional(11.0),
-                            Color32::from_rgb(0xe0, 0x9a, 0x3e),
+                            FontId::proportional(10.0),
+                            dot_col,
                         );
                         clipped.text(
-                            Pos2::new(pill_rect.left() + 20.0, pill_rect.center().y),
+                            pos2(pill_rect.left() + 21.0, pill_rect.center().y),
                             Align2::LEFT_CENTER,
                             &titles[i],
-                            font.clone(),
-                            if is_active { text_col } else { weak_col },
+                            text_font,
+                            fg,
                         );
                     } else {
-                        let _ = text_pos;
                         clipped.text(
-                            Pos2::new(pill_rect.left() + 8.0, pill_rect.center().y),
+                            pos2(pill_rect.left() + 10.0, pill_rect.center().y),
                             Align2::LEFT_CENTER,
                             &titles[i],
-                            font.clone(),
-                            if is_active { text_col } else { weak_col },
+                            text_font,
+                            fg,
                         );
                     }
 
                     if close_resp.hovered() {
-                        ui.painter().rect_filled(close_rect.shrink(3.0), 3.0, hover_bg);
+                        ui.painter().rect_filled(close_rect.shrink(3.5), 4.0, tc.close_hover_bg);
                         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
                     }
+                    let close_fg = if is_active {
+                        if close_resp.hovered() {
+                            tc.active_fg
+                        } else {
+                            tc.active_fg.gamma_multiply(0.82)
+                        }
+                    } else if close_resp.hovered() {
+                        spec.text_fg
+                    } else {
+                        tc.idle_fg
+                    };
                     ui.painter().text(
                         close_rect.center(),
                         Align2::CENTER_CENTER,
                         "×",
                         FontId::proportional(14.0),
-                        if close_resp.hovered() { text_col } else { weak_col },
+                        close_fg,
                     );
 
                     if let Some(p) = &doc.path {
-                        let tip = p.display().to_string();
-                        title_resp.clone().on_hover_text(tip);
+                        title_resp.clone().on_hover_text(p.display().to_string());
                     }
 
                     if close_resp.clicked() || close_resp.middle_clicked() || title_resp.middle_clicked() {
@@ -219,7 +223,7 @@ pub fn show(ui: &mut egui::Ui, docs: &[Document], active: usize) -> Option<TabAc
                         0.0
                     };
                     if let Some(first_r) = rects.first() {
-                        ui.painter().vline(line_x, first_r.y_range(), Stroke::new(2.0, accent));
+                        ui.painter().vline(line_x, first_r.y_range(), Stroke::new(2.0, tc.accent));
                     }
                     if ui.input(|i| !i.pointer.primary_down()) {
                         let to = if target > from { target - 1 } else { target };
@@ -232,7 +236,19 @@ pub fn show(ui: &mut egui::Ui, docs: &[Document], active: usize) -> Option<TabAc
                     drag = None;
                 }
 
-                let plus_resp = ui.add_sized(vec2(26.0, tab_h), egui::Button::new("+").corner_radius(4));
+                // 极简「+」新建标签按钮
+                let (plus_rect, plus_resp) = ui.allocate_exact_size(vec2(26.0, TAB_H), Sense::click());
+                if plus_resp.hovered() {
+                    ui.painter().rect_filled(plus_rect.shrink(2.0), 6.0, tc.hover_bg);
+                    ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                }
+                ui.painter().text(
+                    plus_rect.center(),
+                    Align2::CENTER_CENTER,
+                    "+",
+                    FontId::proportional(15.0),
+                    if plus_resp.hovered() { spec.text_fg } else { tc.idle_fg },
+                );
                 if plus_resp.on_hover_text("新建标签页").clicked() && action.is_none() {
                     action = Some(TabAction::NewTab);
                 }
@@ -241,6 +257,58 @@ pub fn show(ui: &mut egui::Ui, docs: &[Document], active: usize) -> Option<TabAc
 
     ui.ctx().data_mut(|d| d.insert_temp(drag_id, DragState { dragging_uid: drag }));
     action
+}
+
+fn paint_active_tab(painter: &egui::Painter, r: Rect, top_bar_bottom: f32, spec: &theme::ThemeSpec) {
+    let tc = &spec.tabs;
+    match spec.active_tab_style {
+        ActiveTabStyle::SoftShadowPill => {
+            painter.add(tc.shadow.as_shape(r, 8));
+            painter.rect_filled(r, 8.0, tc.active_bg);
+        }
+        ActiveTabStyle::CrimsonGoldBolt => {
+            painter.add(tc.shadow.as_shape(r, 8));
+            painter.rect_filled(r, 8.0, tc.active_bg);
+            painter.hline(
+                (r.left() + 8.0)..=(r.right() - 8.0),
+                r.bottom() - 1.2,
+                Stroke::new(2.0, tc.secondary_accent),
+            );
+            let spark = Rect::from_center_size(pos2(r.center().x, r.bottom() - 0.5), vec2(9.0, 10.0));
+            theme::paint_bolt(painter, spark, tc.secondary_accent);
+        }
+        ActiveTabStyle::ConnectedPageTopBar => {
+            let page_r = Rect::from_min_max(r.min, pos2(r.right(), top_bar_bottom));
+            let rad = CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 };
+            painter.rect_filled(page_r, rad, tc.active_bg);
+            let st = Stroke::new(1.0, tc.border);
+            painter.vline(page_r.left() + 0.5, (page_r.top() + 5.0)..=page_r.bottom(), st);
+            painter.vline(page_r.right() - 0.5, (page_r.top() + 5.0)..=page_r.bottom(), st);
+            painter.hline(
+                (page_r.left() + 4.0)..=(page_r.right() - 4.0),
+                page_r.top() + 1.0,
+                Stroke::new(2.0, tc.accent),
+            );
+        }
+        ActiveTabStyle::CarbonGoldUnderline => {
+            painter.rect_filled(r, 6.0, tc.active_bg);
+            painter.rect_stroke(r, 6.0, Stroke::new(1.0, tc.border), StrokeKind::Inside);
+            painter.hline(
+                (r.left() + 4.0)..=(r.right() - 4.0),
+                r.bottom() - 1.0,
+                Stroke::new(2.0, tc.accent),
+            );
+        }
+        ActiveTabStyle::SmokedGlassRim => {
+            painter.rect_filled(r, 8.0, tc.active_bg);
+            painter.rect_stroke(r, 8.0, Stroke::new(1.0, tc.border), StrokeKind::Inside);
+            painter.hline(
+                (r.left() + 7.0)..=(r.right() - 7.0),
+                r.top() + 0.8,
+                Stroke::new(1.0, tc.secondary_accent),
+            );
+        }
+    }
 }
 
 #[cfg(test)]

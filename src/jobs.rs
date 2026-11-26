@@ -1,8 +1,9 @@
 //! 后台任务调度中心（HTML 导入 / 导出异步执行 + 完成提示条）。
 
 use crate::import::ImportedDoc;
+use crate::theme::{self, STATUS_BAR_H};
 use crate::winutil;
-use eframe::egui;
+use eframe::egui::{self, Align2, Frame, Id, Margin, Stroke};
 use std::path::PathBuf;
 use std::sync::mpsc;
 
@@ -60,38 +61,57 @@ impl JobHub {
         self.running > 0 || self.last_exported.is_some()
     }
 
-    pub fn banner_ui(&mut self, ui: &mut egui::Ui) {
-        let Some(path) = self.last_exported.clone() else {
-            if self.running > 0 {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("正在后台处理 HTML 任务…");
-                });
-            }
+    pub fn floating_banner_ui(&mut self, ctx: &egui::Context) {
+        if !self.has_banner() {
             return;
-        };
-
-        let mut dismiss = false;
-        ui.horizontal(|ui| {
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.display().to_string());
-            ui.label(egui::RichText::new(format!("✓ 已导出 HTML：{name}")).strong());
-            if ui.button("用浏览器打开").clicked() {
-                let _ = winutil::open_default(&path.to_string_lossy());
-            }
-            if ui.button("打开所在文件夹").clicked() {
-                winutil::reveal_in_explorer(&path);
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("×").on_hover_text("关闭提示").clicked() {
-                    dismiss = true;
-                }
-            });
-        });
-        if dismiss {
-            self.last_exported = None;
         }
+        let spec = theme::current(ctx);
+        egui::Area::new(Id::unique("jobs_floating_banner"))
+            .anchor(Align2::RIGHT_BOTTOM, [-14.0, -(STATUS_BAR_H + 10.0)])
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                Frame::new()
+                    .fill(spec.popup_bg)
+                    .stroke(Stroke::new(1.0, spec.border))
+                    .shadow(spec.popup_shadow)
+                    .corner_radius(8)
+                    .inner_margin(Margin::symmetric(12, 8))
+                    .show(ui, |ui| {
+                        let Some(path) = self.last_exported.clone() else {
+                            if self.running > 0 {
+                                ui.horizontal(|ui| {
+                                    ui.spinner();
+                                    ui.label("正在后台处理 HTML 任务…");
+                                });
+                            }
+                            return;
+                        };
+
+                        let mut dismiss = false;
+                        ui.horizontal(|ui| {
+                            let name = path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| path.display().to_string());
+                            ui.label(
+                                egui::RichText::new(format!("✓ 已导出 HTML：{name}"))
+                                    .strong()
+                                    .color(spec.semantic.success),
+                            );
+                            if ui.button("用浏览器打开").clicked() {
+                                let _ = winutil::open_default(&path.to_string_lossy());
+                            }
+                            if ui.button("打开所在文件夹").clicked() {
+                                winutil::reveal_in_explorer(&path);
+                            }
+                            if ui.small_button("×").on_hover_text("关闭提示").clicked() {
+                                dismiss = true;
+                            }
+                        });
+                        if dismiss {
+                            self.last_exported = None;
+                        }
+                    });
+            });
     }
 }
