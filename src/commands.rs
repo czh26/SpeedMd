@@ -41,6 +41,7 @@ pub enum Command {
     FontReset,
     OpenShortcuts,
     OpenSettings,
+    OpenManual,
 }
 
 impl Command {
@@ -81,6 +82,7 @@ impl Command {
         Self::FontReset,
         Self::OpenShortcuts,
         Self::OpenSettings,
+        Self::OpenManual,
     ];
 
     pub fn id(self) -> &'static str {
@@ -121,6 +123,7 @@ impl Command {
             Self::FontReset => "font_reset",
             Self::OpenShortcuts => "open_shortcuts",
             Self::OpenSettings => "open_settings",
+            Self::OpenManual => "open_manual",
         }
     }
 
@@ -166,6 +169,7 @@ impl Command {
             Self::FontReset => "重置字号",
             Self::OpenShortcuts => "快捷键设置…",
             Self::OpenSettings => "外观与编辑器设置…",
+            Self::OpenManual => "语法说明书",
         }
     }
 
@@ -203,6 +207,7 @@ impl Command {
             | Self::FontReset => "视图与字号",
             Self::ToggleSidebar | Self::SidebarFiles | Self::SidebarArticles | Self::SidebarOutline => "侧边栏",
             Self::OpenShortcuts | Self::OpenSettings => "设置",
+            Self::OpenManual => "帮助",
         }
     }
 
@@ -243,6 +248,30 @@ impl Command {
             Self::FontReset => ctrl(Key::Num0),
             Self::OpenShortcuts => ctrl(Key::K),
             Self::OpenSettings => ctrl(Key::Comma),
+            Self::OpenManual => Some(Shortcut::new(false, false, false, Key::F1)),
         }
+    }
+
+    pub fn enabled_on_manual(self) -> bool {
+        !matches!(
+            self,
+            Self::Save
+                | Self::SaveAs
+                | Self::ExportHtml
+                | Self::ExportHtmlFragment
+                | Self::ViewEdit
+                | Self::ViewSplit
+                | Self::ViewPreview
+                | Self::ToggleSourceMode
+                | Self::Find
+                | Self::Replace
+                | Self::FindNext
+                | Self::FindPrev
+                | Self::InlineCode
+                | Self::CodeBlock
+                | Self::CopyAsMarkdown
+                | Self::CopyAsHtml
+                | Self::PastePlain
+        )
     }
 }

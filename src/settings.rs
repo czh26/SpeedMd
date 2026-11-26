@@ -44,6 +44,8 @@ pub struct Settings {
     pub restore_tabs: bool,
     pub session_paths: Vec<PathBuf>,
     pub session_active: usize,
+    pub session_manual_open: bool,
+    pub session_manual_active: bool,
     /// 侧边栏状态
     pub sidebar_open: bool,
     pub sidebar_tab: SidebarTab,
@@ -82,6 +84,8 @@ impl Default for Settings {
             restore_tabs: true,
             session_paths: Vec::new(),
             session_active: 0,
+            session_manual_open: false,
+            session_manual_active: false,
             sidebar_open: false,
             sidebar_tab: SidebarTab::Files,
             workspace_folder: None,

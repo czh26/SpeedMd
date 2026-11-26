@@ -373,6 +373,7 @@ mod tests {
             "Ctrl+=",
             "Ctrl+-",
             "Ctrl+,",
+            "F1",
             "F3",
             "Shift+F3",
             "Ctrl+Tab",
@@ -466,5 +467,16 @@ mod tests {
         km.set(Command::Find, Some(Shortcut::new(true, true, false, Key::F)));
         km.reset_all();
         assert_eq!(km.shortcut(Command::Find), Command::Find.default_shortcut());
+
+        let f1 = Event::Key {
+            key: Key::F1,
+            physical_key: Some(Key::F1),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        let mut events = vec![f1];
+        assert_eq!(km.match_and_consume(&mut events), vec![Command::OpenManual]);
+        assert!(events.is_empty());
     }
 }

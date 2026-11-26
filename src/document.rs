@@ -86,6 +86,7 @@ pub struct Document {
     pub title_hint: Option<String>,
     pub dirty: bool,
     pub is_welcome: bool,
+    pub is_manual: bool,
     pub version: u64,
     pub last_edit_at: Option<Instant>,
     pub parsed: ParseCache,
@@ -113,6 +114,7 @@ impl Document {
             title_hint: None,
             dirty: false,
             is_welcome: false,
+            is_manual: false,
             version: 1,
             last_edit_at: None,
             parsed: ParseCache::default(),
@@ -131,6 +133,13 @@ impl Document {
         let mut doc = Self::new_empty();
         doc.text = welcome.replace("\r\n", "\n");
         doc.is_welcome = true;
+        doc
+    }
+
+    pub fn new_manual() -> Self {
+        let mut doc = Self::new_empty();
+        doc.is_manual = true;
+        doc.title_hint = Some("📖 语法说明书".into());
         doc
     }
 
@@ -173,7 +182,7 @@ impl Document {
     }
 
     pub fn can_reuse_as_blank(&self) -> bool {
-        self.path.is_none() && !self.dirty && (self.text.is_empty() || self.is_welcome)
+        !self.is_manual && self.path.is_none() && !self.dirty && (self.text.is_empty() || self.is_welcome)
     }
 
     pub fn toggle_task(&mut self, offset: usize) {

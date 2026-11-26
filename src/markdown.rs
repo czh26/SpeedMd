@@ -8,7 +8,7 @@ use crate::html_inline::{
 use crate::media::MediaCard;
 use eframe::egui::{text::LayoutJob, Align, Color32, FontFamily, FontId, Stroke, TextFormat};
 use htmd::node::{Node, NodeType};
-use pulldown_cmark::{Alignment, BlockQuoteKind, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, BlockQuoteKind, CodeBlockKind, Event, MetadataBlockKind, Options, Parser, Tag, TagEnd};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
@@ -101,15 +101,29 @@ pub enum Target {
     Anchor(String),
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinkSpan {
+    pub range: Range<usize>,
+    pub target: Target,
+    pub title: Option<String>,
+}
+
 /// 一段排好版的富文本，附带链接所在的字符区间（用于点击检测）
 pub struct Rich {
     pub job: Arc<LayoutJob>,
-    pub links: Vec<(Range<usize>, Target)>,
+    pub links: Vec<LinkSpan>,
 }
 
 pub enum Chunk {
     Text(Rich),
-    Image { url: String, alt: String, width: Option<f32>, height: Option<f32> },
+    Image {
+        url: String,
+        alt: String,
+        title: Option<String>,
+        width: Option<f32>,
+        height: Option<f32>,
+        link: Option<Target>,
+    },
     Media(MediaCard),
 }
 
@@ -264,10 +278,17 @@ impl Default for Style {
 }
 
 enum Atom {
-    Text { s: String, st: Style, link: Option<Target> },
+    Text { s: String, st: Style, link: Option<(Target, Option<String>)> },
     /// `==` 高亮标记，结束时再两两配对
     Mark,
-    Image { url: String, alt: String, width: Option<f32>, height: Option<f32> },
+    Image {
+        url: String,
+        alt: String,
+        title: Option<String>,
+        width: Option<f32>,
+        height: Option<f32>,
+        link: Option<Target>,
+    },
     Media(MediaCard),
 }
 
@@ -282,7 +303,7 @@ struct Base {
 struct TagSnapshot {
     tag: String,
     style: Style,
-    link: Option<Target>,
+    link: Option<(Target, Option<String>)>,
 }
 
 struct InlineBuilder {
@@ -293,8 +314,8 @@ struct InlineBuilder {
     anchors: Vec<String>,
     style: Style,
     style_stack: Vec<TagSnapshot>,
-    link: Option<Target>,
-    image: Option<(String, String)>,
+    link: Option<(Target, Option<String>)>,
+    image: Option<(String, String, Option<String>, Option<Target>)>,
     pending_media: Option<MediaCard>,
     pending: String,
 }
@@ -303,6 +324,23 @@ fn target_from_url(url: &str) -> Target {
     match url.strip_prefix('#') {
         Some(frag) => Target::Anchor(percent_decode(frag)),
         None => Target::Url(url.to_string()),
+    }
+}
+
+fn opt_title(s: &str) -> Option<String> {
+    let t = s.trim();
+    (!t.is_empty()).then(|| t.to_string())
+}
+
+fn font_size_scale(sz: u8) -> f32 {
+    match sz {
+        1 => 0.75,
+        2 => 0.88,
+        3 => 1.0,
+        4 => 1.15,
+        5 => 1.35,
+        6 => 1.6,
+        _ => 1.9,
     }
 }
 
@@ -324,12 +362,24 @@ impl InlineBuilder {
     }
 
     fn text(&mut self, s: &str) {
-        if let Some((_, alt)) = &mut self.image {
+        if let Some((_, alt, _, _)) = &mut self.image {
             alt.push_str(s);
         } else if let Some(m) = &mut self.pending_media {
             m.title.push_str(s);
         } else {
             self.pending.push_str(s);
+        }
+    }
+
+    /// 反斜杠转义后的字符直接按字面量输出，不参与 `==` / `:emoji:` / `^sup^` / `~sub~` 扫描
+    fn escaped_text(&mut self, s: &str) {
+        if let Some((_, alt, _, _)) = &mut self.image {
+            alt.push_str(s);
+        } else if let Some(m) = &mut self.pending_media {
+            m.title.push_str(s);
+        } else {
+            self.flush();
+            self.push_raw(s, self.style, self.link.clone());
         }
     }
 
@@ -341,7 +391,7 @@ impl InlineBuilder {
         }
     }
 
-    fn push_raw(&mut self, s: &str, st: Style, link: Option<Target>) {
+    fn push_raw(&mut self, s: &str, st: Style, link: Option<(Target, Option<String>)>) {
         if s.is_empty() {
             return;
         }
@@ -373,7 +423,7 @@ impl InlineBuilder {
                 }
                 crate::textproc::Segment::Emoji(e) => self.push_raw(e, self.style, link.clone()),
                 crate::textproc::Segment::Autolink { text, url } => {
-                    self.push_raw(text, self.style, Some(Target::Url(url)));
+                    self.push_raw(text, self.style, Some((Target::Url(url), None)));
                 }
             }
         }
@@ -385,7 +435,7 @@ impl InlineBuilder {
     }
 
     fn code(&mut self, s: &str) {
-        if let Some((_, alt)) = &mut self.image {
+        if let Some((_, alt, _, _)) = &mut self.image {
             alt.push_str(s);
             return;
         }
@@ -456,7 +506,9 @@ impl InlineBuilder {
                     } else {
                         let width = tag.attr("width").and_then(parse_dim);
                         let height = tag.attr("height").and_then(parse_dim);
-                        self.atoms.push(Atom::Image { url: src.to_string(), alt, width, height });
+                        let title = tag.attr("title").and_then(opt_title);
+                        let link = self.link.as_ref().map(|(t, _)| t.clone());
+                        self.atoms.push(Atom::Image { url: src.to_string(), alt, title, width, height, link });
                     }
                 }
             }
@@ -488,7 +540,8 @@ impl InlineBuilder {
             "a" => {
                 self.push_tag(name);
                 if let Some(href) = tag.attr("href") {
-                    self.link = Some(target_from_url(href));
+                    let title = tag.attr("title").and_then(opt_title);
+                    self.link = Some((target_from_url(href), title));
                 }
             }
             "span" => {
@@ -524,16 +577,7 @@ impl InlineBuilder {
                     self.style.color = Some(c);
                 }
                 if let Some(sz) = tag.attr("size").and_then(|v| v.trim().parse::<u8>().ok()) {
-                    let scale = match sz {
-                        1 => 0.75,
-                        2 => 0.88,
-                        3 => 1.0,
-                        4 => 1.15,
-                        5 => 1.35,
-                        6 => 1.6,
-                        _ => 1.9,
-                    };
-                    self.style.size_scale = scale;
+                    self.style.size_scale = font_size_scale(sz);
                 }
             }
             "u" | "ins" => {
@@ -579,13 +623,13 @@ impl InlineBuilder {
     fn footnote_ref(&mut self, label: &str, n: usize) {
         self.flush();
         let st = Style { sup: true, ..self.style };
-        self.push_raw(&format!("[{n}]"), st, Some(Target::Anchor(format!("fn-{label}"))));
+        self.push_raw(&format!("[{n}]"), st, Some((Target::Anchor(format!("fn-{label}")), None)));
         self.anchors.push(format!("fnref-{label}"));
     }
 
-    fn start_link(&mut self, url: &str) {
+    fn start_link(&mut self, url: &str, title: &str) {
         self.flush();
-        self.link = Some(target_from_url(url));
+        self.link = Some((target_from_url(url), opt_title(title)));
     }
 
     fn end_link(&mut self) {
@@ -593,17 +637,18 @@ impl InlineBuilder {
         self.link = None;
     }
 
-    fn start_image(&mut self, url: &str) {
+    fn start_image(&mut self, url: &str, title: &str) {
         self.flush();
-        self.image = Some((url.to_string(), String::new()));
+        let link = self.link.as_ref().map(|(t, _)| t.clone());
+        self.image = Some((url.to_string(), String::new(), opt_title(title), link));
     }
 
     fn end_image(&mut self) {
-        if let Some((url, alt)) = self.image.take() {
+        if let Some((url, alt, title, link)) = self.image.take() {
             if let Some(kind) = detect_media_kind(&url) {
                 self.atoms.push(Atom::Media(MediaCard { kind, url, title: alt, poster: None }));
             } else {
-                self.atoms.push(Atom::Image { url, alt, width: None, height: None });
+                self.atoms.push(Atom::Image { url, alt, title, width: None, height: None, link });
             }
         }
     }
@@ -694,10 +739,10 @@ impl InlineBuilder {
 
         let mut chunks = Vec::new();
         let mut job = LayoutJob::default();
-        let mut links: Vec<(Range<usize>, Target)> = Vec::new();
+        let mut links: Vec<LinkSpan> = Vec::new();
         let mut chars = 0usize;
 
-        let flush_job = |job: &mut LayoutJob, links: &mut Vec<(Range<usize>, Target)>, chars: &mut usize, chunks: &mut Vec<Chunk>| {
+        let flush_job = |job: &mut LayoutJob, links: &mut Vec<LinkSpan>, chars: &mut usize, chunks: &mut Vec<Chunk>| {
             if !job.text.trim().is_empty() {
                 chunks.push(Chunk::Text(Rich { job: Arc::new(std::mem::take(job)), links: std::mem::take(links) }));
             } else {
@@ -726,14 +771,14 @@ impl InlineBuilder {
                     let n = s.chars().count();
                     let f = self.format(th, &st, link.is_some());
                     job.append(&s, 0.0, f);
-                    if let Some(t) = link {
-                        links.push((chars..chars + n, t));
+                    if let Some((target, title)) = link {
+                        links.push(LinkSpan { range: chars..chars + n, target, title });
                     }
                     chars += n;
                 }
-                Atom::Image { url, alt, width, height } => {
+                Atom::Image { url, alt, title, width, height, link } => {
                     flush_job(&mut job, &mut links, &mut chars, &mut chunks);
-                    chunks.push(Chunk::Image { url, alt, width, height });
+                    chunks.push(Chunk::Image { url, alt, title, width, height, link });
                 }
                 Atom::Media(card) => {
                     flush_job(&mut job, &mut links, &mut chars, &mut chunks);
@@ -747,7 +792,7 @@ impl InlineBuilder {
     }
 }
 
-fn front_matter_job(src: &str, th: &Theme) -> LayoutJob {
+fn front_matter_job(src: &str, kind: MetadataBlockKind, th: &Theme) -> LayoutJob {
     let font = FontId::monospace(th.size * 0.88);
     let fmt = |color| TextFormat { font_id: font.clone(), color, line_height: Some(th.size * 1.45), ..Default::default() };
     let mut job = LayoutJob::default();
@@ -756,14 +801,30 @@ fn front_matter_job(src: &str, th: &Theme) -> LayoutJob {
         let trimmed = line.trim_start();
         if trimmed.starts_with('#') {
             job.append(line, 0.0, fmt(th.weak));
-        } else if let Some(colon) = line.find(':')
-            && !line.starts_with(' ')
-            && !line.starts_with('-')
-        {
-            job.append(&line[..colon], 0.0, fmt(th.link));
-            job.append(&line[colon..], 0.0, fmt(th.text));
         } else {
-            job.append(line, 0.0, fmt(th.text));
+            match kind {
+                MetadataBlockKind::YamlStyle => {
+                    if !trimmed.starts_with('-')
+                        && let Some(colon) = line.find(':')
+                        && !line[..colon].contains("://")
+                    {
+                        job.append(&line[..colon], 0.0, fmt(th.link));
+                        job.append(&line[colon..], 0.0, fmt(th.text));
+                    } else {
+                        job.append(line, 0.0, fmt(th.text));
+                    }
+                }
+                MetadataBlockKind::PlusesStyle => {
+                    if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                        job.append(line, 0.0, fmt(th.heading));
+                    } else if let Some(eq) = line.find('=') {
+                        job.append(&line[..eq], 0.0, fmt(th.link));
+                        job.append(&line[eq..], 0.0, fmt(th.text));
+                    } else {
+                        job.append(line, 0.0, fmt(th.text));
+                    }
+                }
+            }
         }
         if n + 1 < lines.len() {
             job.append("\n", 0.0, fmt(th.text));
@@ -791,7 +852,7 @@ enum Leaf {
     Cell,
     Code { lang: String, buf: String },
     Html(String),
-    Meta(String),
+    Meta(MetadataBlockKind, String),
 }
 
 struct TableState {
@@ -1129,8 +1190,17 @@ impl<'t> DocParser<'t> {
             }
             Event::End(end) => self.end(end),
             Event::Text(t) => match &mut self.leaf {
-                Leaf::Code { buf, .. } | Leaf::Html(buf) | Leaf::Meta(buf) => buf.push_str(&t),
-                _ => self.ib().text(&t),
+                Leaf::Code { buf, .. } | Leaf::Html(buf) | Leaf::Meta(_, buf) => buf.push_str(&t),
+                _ => {
+                    let is_escaped = !t.is_empty()
+                        && src.get(range.clone()) == Some(&*t)
+                        && is_preceded_by_odd_backslashes(src.as_bytes(), range.start);
+                    if is_escaped {
+                        self.ib().escaped_text(&t);
+                    } else {
+                        self.ib().text(&t);
+                    }
+                }
             },
             Event::Code(t) | Event::InlineMath(t) | Event::DisplayMath(t) => self.ib().code(&t),
             Event::Html(t) => match &mut self.leaf {
@@ -1252,9 +1322,9 @@ impl<'t> DocParser<'t> {
             Tag::Strikethrough => self.ib().set(|s| s.strike = true),
             Tag::Superscript => self.ib().set(|s| s.sup = true),
             Tag::Subscript => self.ib().set(|s| s.sub = true),
-            Tag::Link { dest_url, .. } => self.ib().start_link(&dest_url),
-            Tag::Image { dest_url, .. } => self.ib().start_image(&dest_url),
-            Tag::MetadataBlock(_) => self.leaf = Leaf::Meta(String::new()),
+            Tag::Link { dest_url, title, .. } => self.ib().start_link(&dest_url, &title),
+            Tag::Image { dest_url, title, .. } => self.ib().start_image(&dest_url, &title),
+            Tag::MetadataBlock(kind) => self.leaf = Leaf::Meta(kind, String::new()),
             Tag::DefinitionList | Tag::DefinitionListTitle | Tag::DefinitionListDefinition => {}
         }
     }
@@ -1356,11 +1426,11 @@ impl<'t> DocParser<'t> {
             TagEnd::Link => self.ib().end_link(),
             TagEnd::Image => self.ib().end_image(),
             TagEnd::MetadataBlock(_) => {
-                if let Leaf::Meta(buf) = std::mem::replace(&mut self.leaf, Leaf::None)
+                if let Leaf::Meta(kind, buf) = std::mem::replace(&mut self.leaf, Leaf::None)
                     && self.show_meta
                     && !buf.trim().is_empty()
                 {
-                    let job = front_matter_job(&buf, self.th);
+                    let job = front_matter_job(&buf, kind, self.th);
                     self.push_block(Block::FrontMatter(Arc::new(job)));
                 }
             }
@@ -1394,6 +1464,16 @@ impl<'t> DocParser<'t> {
         footnotes.sort_by_key(|f| f.number);
         Doc { blocks, block_ranges: self.root_ranges, headings: self.headings, footnotes }
     }
+}
+
+fn is_preceded_by_odd_backslashes(src: &[u8], pos: usize) -> bool {
+    let mut count = 0usize;
+    let mut i = pos.min(src.len());
+    while i > 0 && src[i - 1] == b'\\' {
+        count += 1;
+        i -= 1;
+    }
+    count % 2 == 1
 }
 
 // ---------------------------------------------------------------- DOM HTML 块转换
@@ -1563,7 +1643,9 @@ fn feed_dom_inline(node: &Node<'_>, ib: &mut InlineBuilder) {
                     } else {
                         let width = node.attrs().get("width").and_then(parse_dim);
                         let height = node.attrs().get("height").and_then(parse_dim);
-                        ib.atoms.push(Atom::Image { url: src.to_string(), alt, width, height });
+                        let title = node.attrs().get("title").and_then(opt_title);
+                        let link = ib.link.as_ref().map(|(t, _)| t.clone());
+                        ib.atoms.push(Atom::Image { url: src.to_string(), alt, title, width, height, link });
                     }
                 }
                 return;
@@ -1579,7 +1661,8 @@ fn feed_dom_inline(node: &Node<'_>, ib: &mut InlineBuilder) {
             match tag {
                 "a" => {
                     if let Some(href) = node.attrs().get("href") {
-                        ib.link = Some(target_from_url(href));
+                        let title = node.attrs().get("title").and_then(opt_title);
+                        ib.link = Some((target_from_url(href), title));
                     }
                 }
                 "span" | "p" | "div" => {
@@ -1611,6 +1694,9 @@ fn feed_dom_inline(node: &Node<'_>, ib: &mut InlineBuilder) {
                 "font" => {
                     if let Some(c) = node.attrs().get("color").and_then(parse_css_color) {
                         ib.style.color = Some(c);
+                    }
+                    if let Some(sz) = node.attrs().get("size").and_then(|v| v.trim().parse::<u8>().ok()) {
+                        ib.style.size_scale = font_size_scale(sz);
                     }
                 }
                 "b" | "strong" => ib.style.strong = true,
@@ -1935,5 +2021,23 @@ mod tests {
         }
         assert!(matches!(doc.blocks[1], Block::Aligned { align: Align::Center, .. }));
         assert!(matches!(doc.blocks[2], Block::Media(_)));
+    }
+
+    #[test]
+    fn escaped_extensions_image_links_titles_and_toml_front_matter() {
+        let md = "+++\ntitle = \"TOML 测试\"\n[author]\nname = \"MdPad\"\n+++\n\n\\==非高亮== \\:smile: [链接](https://example.com \"提示标题\") [![alt](https://example.com/a.png \"图标题\")](https://rust-lang.org)\n";
+        let th = Theme::new(false, 16.0);
+        let doc = parse(md, &th, &ParseOptions { sup_sub: true, front_matter: true });
+        assert!(matches!(doc.blocks[0], Block::FrontMatter(_)));
+        let Block::Paragraph(inl) = &doc.blocks[1] else { panic!("expected paragraph") };
+        let Chunk::Text(r0) = &inl.chunks[0] else { panic!("expected text chunk") };
+        assert!(r0.job.text.contains("==非高亮=="));
+        assert!(inl.plain.contains(":smile:"));
+        assert_eq!(r0.links.len(), 1);
+        assert_eq!(r0.links[0].title.as_deref(), Some("提示标题"));
+        let Chunk::Image { url, title, link, .. } = &inl.chunks[1] else { panic!("expected image chunk") };
+        assert_eq!(url, "https://example.com/a.png");
+        assert_eq!(title.as_deref(), Some("图标题"));
+        assert_eq!(*link, Some(Target::Url("https://rust-lang.org".into())));
     }
 }

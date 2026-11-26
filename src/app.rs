@@ -6,6 +6,7 @@ use crate::editor::{self, EditorConfig};
 use crate::find::{self, FindAction};
 use crate::fonts::{self, FontCatalog, FontChoice};
 use crate::keymap::Keymap;
+use crate::manual::{self, InsertMode, ManualAction, ManualState, ManualViewCfg, SettingDep};
 use crate::markdown::ParseOptions;
 use crate::preview::PreviewOptions;
 use crate::settings::{Settings, SidebarTab, ViewMode};
@@ -82,12 +83,21 @@ pub struct MdApp {
     export_follow_theme: bool,
     export_embed_images: bool,
     shortcuts_ui: crate::shortcuts_ui::ShortcutsUiState,
+    manual: ManualState,
+    last_doc_uid: Option<u64>,
     shot: Option<ShotRunner>,
     bench: Option<BenchRunner>,
 }
 
 impl MdApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let shot_path = std::env::var_os("MDPAD_SCREENSHOT").map(PathBuf::from);
+        let bench_typing = std::env::var("MDPAD_BENCH").as_deref() == Ok("typing");
+        let is_test = shot_path.is_some() || bench_typing;
+        if is_test {
+            cc.egui_ctx.data_mut(|d| d.clear());
+        }
+
         crate::fonts::setup(&cc.egui_ctx);
         egui_extras::install_image_loaders(&cc.egui_ctx);
         cc.egui_ctx.options_mut(|o| {
@@ -95,8 +105,6 @@ impl MdApp {
             o.quit_shortcuts.clear();
         });
 
-        let shot_path = std::env::var_os("MDPAD_SCREENSHOT").map(PathBuf::from);
-        let bench_typing = std::env::var("MDPAD_BENCH").as_deref() == Ok("typing");
         let bench_out = std::env::var_os("MDPAD_BENCH_OUT").map(PathBuf::from);
         let test_cmds: Vec<String> = std::env::var("MDPAD_TEST_COMMANDS")
             .map(|s| s.split(';').map(str::trim).filter(|c| !c.is_empty()).map(str::to_string).collect())
@@ -105,7 +113,6 @@ impl MdApp {
         let mut settings: Settings =
             cc.storage.and_then(|s| eframe::get_value(s, eframe::APP_KEY)).unwrap_or_default();
 
-        let is_test = shot_path.is_some() || bench_typing;
         if is_test {
             settings = Settings::default();
             match std::env::var("MDPAD_MODE").as_deref() {
@@ -161,6 +168,8 @@ impl MdApp {
             export_follow_theme: true,
             export_embed_images: false,
             shortcuts_ui: crate::shortcuts_ui::ShortcutsUiState::default(),
+            manual: ManualState::default(),
+            last_doc_uid: None,
             shot,
             bench,
         };
@@ -176,9 +185,14 @@ impl MdApp {
             for p in cli_args {
                 app.open_file(p);
             }
-        } else if !is_test && app.settings.restore_tabs && !app.settings.session_paths.is_empty() {
+        } else if !is_test
+            && app.settings.restore_tabs
+            && (!app.settings.session_paths.is_empty() || app.settings.session_manual_open)
+        {
             let paths = app.settings.session_paths.clone();
             let saved_active = app.settings.session_active;
+            let restore_manual = app.settings.session_manual_open;
+            let manual_active = app.settings.session_manual_active;
             for p in paths {
                 if p.is_file() {
                     app.open_file_silent(p);
@@ -186,6 +200,15 @@ impl MdApp {
             }
             if !app.docs.is_empty() {
                 app.active = saved_active.min(app.docs.len() - 1);
+                app.last_doc_uid = Some(app.docs[app.active].uid);
+            }
+            if restore_manual {
+                app.manual.ensure_loaded();
+                app.docs.push(Document::new_manual());
+                if manual_active || app.docs.len() == 1 {
+                    app.active = app.docs.len() - 1;
+                    app.manual.focus_search = true;
+                }
             }
         }
 
@@ -193,12 +216,24 @@ impl MdApp {
             app.docs.push(Document::from_welcome(WELCOME));
             app.active = 0;
         }
+        if !app.doc().is_manual {
+            app.last_doc_uid = Some(app.doc().uid);
+        }
 
         if let Ok(anchor) = std::env::var("MDPAD_ANCHOR") {
             app.docs[app.active].preview.scroll_to(anchor);
         }
         if let Ok(q) = std::env::var("MDPAD_FIND_QUERY") {
             app.docs[app.active].find.query = q;
+        }
+        if let Ok(q) = std::env::var("MDPAD_MANUAL_QUERY") {
+            app.manual.query = q;
+        }
+        if let Ok(cat) = std::env::var("MDPAD_MANUAL_CATEGORY") {
+            app.manual.scroll_to_category_name(&cat);
+        }
+        if let Ok(entry) = std::env::var("MDPAD_MANUAL_ENTRY") {
+            app.manual.scroll_to_entry_id(&entry);
         }
         app
     }
@@ -307,6 +342,9 @@ impl MdApp {
     }
 
     fn save_doc(&mut self, idx: usize) -> bool {
+        if self.docs.get(idx).is_none_or(|d| d.is_manual) {
+            return false;
+        }
         if let Some(path) = self.docs[idx].path.clone() {
             self.write_doc(idx, path)
         } else {
@@ -315,6 +353,9 @@ impl MdApp {
     }
 
     fn save_doc_as(&mut self, idx: usize) -> bool {
+        if self.docs.get(idx).is_none_or(|d| d.is_manual) {
+            return false;
+        }
         let name = self.docs[idx]
             .path
             .as_deref()
@@ -609,14 +650,56 @@ impl MdApp {
         doc.find.ensure_updated(ctx, &doc.text, doc.version, true);
     }
 
+    fn open_manual(&mut self) {
+        self.manual.ensure_loaded();
+        self.manual.focus_search = true;
+        if let Some(idx) = self.docs.iter().position(|d| d.is_manual) {
+            self.active = idx;
+        } else {
+            self.manual.reset_scroll_if_idle();
+            self.docs.push(Document::new_manual());
+            self.active = self.docs.len() - 1;
+        }
+    }
+
+    fn insert_from_manual(&mut self, ctx: &egui::Context, code: &str, mode: InsertMode) {
+        let target_idx = self
+            .last_doc_uid
+            .and_then(|uid| self.idx_by_uid(uid))
+            .filter(|&i| !self.docs[i].is_manual)
+            .or_else(|| self.docs.iter().rposition(|d| !d.is_manual))
+            .unwrap_or_else(|| {
+                self.docs.push(Document::new_empty());
+                self.docs.len() - 1
+            });
+        if self.settings.mode == ViewMode::Preview {
+            self.settings.mode = ViewMode::Split;
+        }
+        self.active = target_idx;
+        let sel = editor::current_selection_chars(ctx, self.docs[target_idx].uid, &self.docs[target_idx].text);
+        let patch = manual::build_insert_patch(&self.docs[target_idx].text, sel, code, mode);
+        let cur_chars = patch.new_sel_chars.start;
+        editor::apply_text_patch(ctx, &mut self.docs[target_idx], patch);
+        let b_cur = editor::char_to_byte(&self.docs[target_idx].text, cur_chars);
+        self.docs[target_idx].pending_selection = Some(b_cur..b_cur);
+        self.docs[target_idx].scroll_to_selection = true;
+        let ed_id = editor::editor_id(self.docs[target_idx].uid);
+        ctx.memory_mut(|m| m.request_focus(ed_id));
+        self.last_doc_uid = Some(self.docs[target_idx].uid);
+    }
+
     // ---------- 命令分发与字号调节 ----------
 
     fn adjust_font(&mut self, ctx: &egui::Context, delta: Option<f32>) {
         let pointer = ctx.pointer_latest_pos();
-        let target_preview = match self.settings.mode {
-            ViewMode::Edit => false,
-            ViewMode::Preview => true,
-            ViewMode::Split => pointer.is_some_and(|p| self.preview_rect.contains(p)),
+        let target_preview = if self.doc().is_manual {
+            true
+        } else {
+            match self.settings.mode {
+                ViewMode::Edit => false,
+                ViewMode::Preview => true,
+                ViewMode::Split => pointer.is_some_and(|p| self.preview_rect.contains(p)),
+            }
         };
         let size = if target_preview {
             &mut self.settings.preview_font_size
@@ -630,6 +713,9 @@ impl MdApp {
     }
 
     pub fn run_command(&mut self, ctx: &egui::Context, cmd: Command) {
+        if self.doc().is_manual && !cmd.enabled_on_manual() {
+            return;
+        }
         match cmd {
             Command::NewTab | Command::New => self.new_tab(),
             Command::CloseTab => self.request_close_tab(self.active),
@@ -734,6 +820,7 @@ impl MdApp {
             Command::OpenShortcuts => {
                 self.shortcuts_ui.open = true;
             }
+            Command::OpenManual => self.open_manual(),
         }
     }
 
@@ -776,8 +863,9 @@ impl MdApp {
     // ---------- 界面 ----------
 
     fn menu_btn(&self, ui: &mut egui::Ui, cmd: Command) -> bool {
+        let enabled = !self.doc().is_manual || cmd.enabled_on_manual();
         let btn = egui::Button::new(cmd.label()).shortcut_text(self.keymap.label(cmd));
-        ui.add(btn).clicked()
+        ui.add_enabled(enabled, btn).clicked()
     }
 
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
@@ -891,13 +979,23 @@ impl MdApp {
                 ui.checkbox(&mut self.settings.restore_tabs, "启动时恢复上次打开的标签");
             });
 
+            ui.menu_button("帮助", |ui| {
+                if self.menu_btn(ui, Command::OpenManual) {
+                    pending_cmd = Some(Command::OpenManual);
+                    ui.close();
+                }
+            });
+
+            let is_manual = self.doc().is_manual;
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 egui::widgets::global_theme_preference_buttons(ui);
                 ui.separator();
-                let mode = &mut self.settings.mode;
-                ui.selectable_value(mode, ViewMode::Preview, "预览");
-                ui.selectable_value(mode, ViewMode::Split, "分屏");
-                ui.selectable_value(mode, ViewMode::Edit, "编辑");
+                ui.add_enabled_ui(!is_manual, |ui| {
+                    let mode = &mut self.settings.mode;
+                    ui.selectable_value(mode, ViewMode::Preview, "预览");
+                    ui.selectable_value(mode, ViewMode::Split, "分屏");
+                    ui.selectable_value(mode, ViewMode::Edit, "编辑");
+                });
             });
         });
 
@@ -937,6 +1035,19 @@ impl MdApp {
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         let doc = self.doc();
+        if doc.is_manual {
+            ui.horizontal(|ui| {
+                ui.weak("内置语法说明书 · 只读 · Esc 清空搜索 · 支持复制与一键插入到当前文档");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.weak(format!(
+                        "{} 个分类 · {} 条语法",
+                        self.manual.category_count(),
+                        self.manual.entry_count()
+                    ));
+                });
+            });
+            return;
+        }
         let path = doc.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "未保存的新文件".into());
         let dirty = doc.dirty;
         let full = doc.stats.full;
@@ -1016,6 +1127,7 @@ impl MdApp {
                     base_dir: base.as_deref(),
                     code_line_numbers,
                     max_content_width,
+                    allow_local_open: true,
                 };
                 doc.preview.ui(ui, doc.uid, parsed_doc, th, key, preview_opts)
             } else {
@@ -1028,6 +1140,37 @@ impl MdApp {
         }
         if let Some(p) = actions.open_file {
             self.open_file(p);
+        }
+    }
+
+    fn manual_pane(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let has_modal = self.settings_open
+            || self.shortcuts_ui.open
+            || self.confirm.is_some()
+            || self.error.is_some()
+            || self.export_dialog_open
+            || self.stats_popup_open;
+        let cfg = ManualViewCfg {
+            editor_font_size: self.settings.editor_font_size,
+            editor_font_family: &self.settings.editor_font_family,
+            preview_font_size: self.settings.preview_font_size,
+            line_height: self.settings.line_height,
+            para_spacing: self.settings.paragraph_spacing,
+            sup_sub: self.settings.sup_sub,
+            front_matter: self.settings.front_matter,
+            code_line_numbers: self.settings.code_line_numbers,
+            max_content_width: self.settings.max_content_width,
+            allow_esc_clear: !has_modal,
+        };
+        if let Some(act) = self.manual.show(ui, &cfg) {
+            match act {
+                ManualAction::Insert { code, mode } => self.insert_from_manual(&ctx, &code, mode),
+                ManualAction::EnableSetting(dep) => match dep {
+                    SettingDep::SupSub => self.settings.sup_sub = true,
+                    SettingDep::FrontMatter => self.settings.front_matter = true,
+                },
+            }
         }
     }
 
@@ -1638,10 +1781,13 @@ impl eframe::App for MdApp {
 
         self.handle_input(ctx);
         self.update_title(ctx);
+        if !self.doc().is_manual {
+            self.last_doc_uid = Some(self.doc().uid);
+        }
 
         let stats_opts = self.stats_opts();
-        let sel_chars = editor::current_selection_chars(ctx, self.doc().uid, &self.doc().text);
-        {
+        if !self.doc().is_manual {
+            let sel_chars = editor::current_selection_chars(ctx, self.doc().uid, &self.doc().text);
             let doc = self.doc_mut();
             if doc.find.open {
                 doc.find.ensure_updated(ctx, &doc.text, doc.version, false);
@@ -1653,7 +1799,10 @@ impl eframe::App for MdApp {
             doc.stats.update_selection(&doc.text, doc.version, sel_bytes, stats_opts);
         }
 
-        if self.settings.mode == ViewMode::Edit || (self.settings.sidebar_open && self.settings.sidebar_tab == SidebarTab::Outline) {
+        if !self.doc().is_manual
+            && (self.settings.mode == ViewMode::Edit
+                || (self.settings.sidebar_open && self.settings.sidebar_tab == SidebarTab::Outline))
+        {
             let dark = ui.visuals().dark_mode;
             let font_size = self.settings.preview_font_size;
             let line_height = self.settings.line_height;
@@ -1675,6 +1824,9 @@ impl eframe::App for MdApp {
 
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
         egui::Panel::top("tabs").show(ui, |ui| self.tab_bar(ui));
+        if !self.doc().is_manual {
+            self.last_doc_uid = Some(self.doc().uid);
+        }
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         if self.jobs.has_banner() {
             egui::Panel::bottom("jobs_banner").show(ui, |ui| self.jobs.banner_ui(ui));
@@ -1731,6 +1883,10 @@ impl eframe::App for MdApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::central_panel(&ctx.global_style()).inner_margin(0))
             .show(ui, |ui| {
+                if self.doc().is_manual {
+                    self.manual_pane(ui);
+                    return;
+                }
                 if self.settings.mode != ViewMode::Preview {
                     let find_action = find::bar_ui(ui, &mut self.doc_mut().find);
                     if let Some(act) = find_action {
@@ -1796,6 +1952,8 @@ impl eframe::App for MdApp {
                 }
                 self.settings.session_paths = paths;
                 self.settings.session_active = active;
+                self.settings.session_manual_open = self.docs.iter().any(|d| d.is_manual);
+                self.settings.session_manual_active = self.doc().is_manual;
             }
             eframe::set_value(storage, eframe::APP_KEY, &self.settings);
         }

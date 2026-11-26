@@ -14,6 +14,7 @@ mod html_inline;
 mod import;
 mod jobs;
 mod keymap;
+mod manual;
 mod markdown;
 mod media;
 mod preview;

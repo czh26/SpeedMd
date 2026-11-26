@@ -6,6 +6,8 @@ tags: [markdown, rust, egui]
 
 # 欢迎使用 MdPad
 
+> 💡 按 F1 打开语法说明书，所有语法都可以一键复制。
+
 一个用 **Rust + egui** 写的极速 Markdown 编辑器。下面演示所有支持的语法。
 
 [TOC]

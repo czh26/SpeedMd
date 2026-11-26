@@ -26,6 +26,7 @@ pub struct PreviewOptions<'a> {
     pub base_dir: Option<&'a Path>,
     pub code_line_numbers: bool,
     pub max_content_width: f32,
+    pub allow_local_open: bool,
 }
 
 #[derive(Default)]
@@ -49,6 +50,7 @@ struct Rcx<'a> {
     list_depth: usize,
     code_line_numbers: bool,
     align: Option<Align>,
+    allow_local_open: bool,
 }
 
 impl Rcx<'_> {
@@ -69,13 +71,21 @@ impl Rcx<'_> {
             .unwrap_or_else(|| a.to_string())
     }
 
+    fn is_external_url(u: &str) -> bool {
+        u.starts_with("http://") || u.starts_with("https://") || u.starts_with("mailto:")
+    }
+
     fn follow(&mut self, ui: &egui::Ui, target: &Target) {
         match target {
             Target::Anchor(a) => *self.nav = Some(self.resolve_anchor(a)),
             Target::Url(u) => {
-                if u.contains("://") || u.starts_with("mailto:") {
+                if Self::is_external_url(u) {
                     ui.ctx().open_url(egui::OpenUrl::new_tab(u));
-                } else {
+                } else if u.contains("://") {
+                    if self.allow_local_open {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(u));
+                    }
+                } else if self.allow_local_open {
                     let path_part = u.split('#').next().unwrap_or("");
                     let p = resolve_path(&markdown::percent_decode(path_part), self.base_dir);
                     let is_md = p.extension().is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"));
@@ -168,6 +178,7 @@ impl PreviewState {
                                     list_depth: 0,
                                     code_line_numbers: opts.code_line_numbers,
                                     align: None,
+                                    allow_local_open: opts.allow_local_open,
                                 };
                                 for (i, block) in doc.blocks.iter().enumerate() {
                                     let y = ui.cursor().top() - origin;
@@ -211,6 +222,40 @@ impl PreviewState {
             ui.ctx().request_repaint();
         }
         actions
+    }
+}
+
+/// 在现有容器中直接渲染一份已解析的 `Doc`（不创建独立 ScrollArea），供语法说明书卡片复用主预览渲染逻辑。
+pub fn render_doc_inline(
+    ui: &mut egui::Ui,
+    uid: u64,
+    doc: &Doc,
+    th: &Theme,
+    opts: PreviewOptions<'_>,
+    scroll_to: &mut Option<String>,
+) {
+    let mut actions = Actions::default();
+    let mut nav: Option<String> = None;
+    ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+    let mut rcx = Rcx {
+        th,
+        doc,
+        doc_uid: uid,
+        scroll_to,
+        nav: &mut nav,
+        actions: &mut actions,
+        base_dir: opts.base_dir,
+        list_depth: 0,
+        code_line_numbers: opts.code_line_numbers,
+        align: None,
+        allow_local_open: opts.allow_local_open,
+    };
+    render_blocks(ui, &doc.blocks, &mut rcx);
+    render_footnotes(ui, &mut rcx);
+    *rcx.scroll_to = None;
+    if let Some(a) = nav {
+        *scroll_to = Some(a);
+        ui.ctx().request_repaint();
     }
 }
 
@@ -311,7 +356,7 @@ fn render_block(ui: &mut egui::Ui, block: &Block, rcx: &mut Rcx, first: bool) {
             rcx.align = prev;
         }
         Block::Media(card) => {
-            media::render_card(ui, card, th, rcx.base_dir);
+            media::render_card_opts(ui, card, th, rcx.base_dir, rcx.allow_local_open);
         }
     }
 }
@@ -498,7 +543,7 @@ fn render_list(ui: &mut egui::Ui, start: Option<u64>, items: &[markdown::Item], 
         }
         ui.horizontal_top(|ui| {
             let line_h = th.line_height();
-            let sense = if item.task.is_some() { Sense::click() } else { Sense::hover() };
+            let sense = if item.task.is_some() && rcx.allow_local_open { Sense::click() } else { Sense::hover() };
             let (rect, resp) = ui.allocate_exact_size(vec2(marker_w, line_h), sense);
             let painter = ui.painter().clone();
             let cy = rect.center().y;
@@ -510,14 +555,16 @@ fn render_list(ui: &mut egui::Ui, start: Option<u64>, items: &[markdown::Item], 
                         let p = |x: f32, y: f32| pos2(bx.left() + bx.width() * x, bx.top() + bx.height() * y);
                         painter.line(vec![p(0.22, 0.52), p(0.42, 0.72), p(0.78, 0.30)], Stroke::new(2.0, Color32::WHITE));
                     } else {
-                        let stroke = if resp.hovered() { th.accent } else { th.weak };
+                        let stroke = if resp.hovered() && rcx.allow_local_open { th.accent } else { th.weak };
                         painter.rect_stroke(bx, 3, Stroke::new(1.5, stroke), StrokeKind::Inside);
                     }
-                    if resp.hovered() {
-                        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-                    }
-                    if resp.clicked() {
-                        rcx.actions.toggle_task = Some(off);
+                    if rcx.allow_local_open {
+                        if resp.hovered() {
+                            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                        }
+                        if resp.clicked() {
+                            rcx.actions.toggle_task = Some(off);
+                        }
                     }
                 }
                 (None, Some(s)) => {
@@ -575,16 +622,27 @@ fn show_galley(ui: &mut egui::Ui, galley: Arc<Galley>, rich: &Rich, rcx: &mut Rc
         let b = galley.pos_from_cursor(CCursor::new(idx + 1));
         let right = if (b.min.y - a.min.y).abs() < 1.0 && b.min.x > a.min.x { b.min.x } else { a.min.x + rcx.th.size };
         let over_char = rel.x >= a.min.x - 1.0 && rel.x <= right + 1.0 && rel.y >= a.min.y - 2.0 && rel.y <= a.max.y + 2.0;
-        if over_char && let Some((_, target)) = rich.links.iter().find(|(r, _)| r.contains(&idx)) {
-            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-            let tip = match target {
+        if over_char && let Some(ls) = rich.links.iter().find(|l| l.range.contains(&idx)) {
+            let can_follow = match &ls.target {
+                Target::Anchor(_) => true,
+                Target::Url(u) => Rcx::is_external_url(u) || rcx.allow_local_open,
+            };
+            if can_follow {
+                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            }
+            let base_tip = match &ls.target {
+                Target::Url(u) if !can_follow => format!("{u}（本地路径示例，说明书预览中不打开）"),
                 Target::Url(u) => u.clone(),
                 Target::Anchor(a) => format!("#{a}"),
             };
+            let tip = match &ls.title {
+                Some(title) if !title.is_empty() => format!("{title}\n{base_tip}"),
+                _ => base_tip,
+            };
             let clicked = resp.clicked();
             resp.on_hover_text_at_pointer(tip);
-            if clicked {
-                rcx.follow(ui, target);
+            if clicked && can_follow {
+                rcx.follow(ui, &ls.target);
             }
         }
     }
@@ -600,18 +658,34 @@ fn render_rich(ui: &mut egui::Ui, rich: &Rich, rcx: &mut Rcx) -> Rect {
     Rect::from_x_y_ranges(full.x_range(), top..=bottom.max(top + 1.0))
 }
 
-fn render_image(
-    ui: &mut egui::Ui,
-    url: &str,
-    alt: &str,
+struct ImageRef<'a> {
+    url: &'a str,
+    alt: &'a str,
+    title: Option<&'a str>,
     width: Option<f32>,
     height: Option<f32>,
-    rcx: &mut Rcx,
-) -> Rect {
-    let uri = if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file://") {
+    link: Option<&'a Target>,
+}
+
+fn render_image(ui: &mut egui::Ui, im: ImageRef<'_>, rcx: &mut Rcx) -> Rect {
+    let ImageRef { url, alt, title, width, height, link } = im;
+    let mut local_fallback = false;
+    let uri = if url.starts_with("bytes://") {
+        if url.starts_with("bytes://mdpad/") {
+            crate::manual::ensure_demo_images(ui.ctx());
+        }
+        url.to_string()
+    } else if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file://") {
         url.to_string()
     } else {
-        file_uri(&resolve_path(&markdown::percent_decode(url), rcx.base_dir))
+        let p = resolve_path(&markdown::percent_decode(url), rcx.base_dir);
+        if !rcx.allow_local_open && !p.is_file() {
+            crate::manual::ensure_demo_images(ui.ctx());
+            local_fallback = true;
+            "bytes://mdpad/local-demo.png".to_string()
+        } else {
+            file_uri(&p)
+        }
     };
     let avail = ui.available_width();
     let mut img = egui::Image::new(uri).corner_radius(4);
@@ -622,15 +696,45 @@ fn render_image(
         }
         (Some(w), None) if w > 0.0 => {
             let w = w.min(avail);
-            img.max_width(w).fit_to_exact_size(vec2(w, 10_000.0))
+            img.fit_to_exact_size(vec2(w, 10_000.0)).maintain_aspect_ratio(true)
         }
-        (None, Some(h)) if h > 0.0 => img.max_width(avail).fit_to_exact_size(vec2(avail, h)),
-        _ => img.max_width(avail),
+        (None, Some(h)) if h > 0.0 => img.fit_to_exact_size(vec2(avail, h)).maintain_aspect_ratio(true),
+        _ => img.fit_to_original_size(1.0).max_width(avail),
     };
+    let can_click_link = link.is_some_and(|t| match t {
+        Target::Anchor(_) => true,
+        Target::Url(u) => Rcx::is_external_url(u) || rcx.allow_local_open,
+    });
+    if can_click_link {
+        img = img.sense(Sense::click());
+    }
     let resp = ui.add(img);
     let r = resp.rect;
-    if !alt.is_empty() {
-        resp.on_hover_text(alt);
+    if can_click_link && resp.hovered() {
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    }
+    let clicked = can_click_link && resp.clicked();
+    let mut tip_parts: Vec<String> = Vec::new();
+    if let Some(t) = title.filter(|s| !s.is_empty()) {
+        tip_parts.push(t.to_string());
+    } else if !alt.is_empty() {
+        tip_parts.push(alt.to_string());
+    }
+    if local_fallback {
+        tip_parts.push(format!("本地相对路径示例：{url}（请替换成你自己的文件路径）"));
+    }
+    if let Some(t) = link {
+        let dst = match t {
+            Target::Url(u) => u.clone(),
+            Target::Anchor(a) => format!("#{a}"),
+        };
+        tip_parts.push(format!("点击跳转：{dst}"));
+    }
+    if !tip_parts.is_empty() {
+        resp.on_hover_text(tip_parts.join("\n"));
+    }
+    if clicked && let Some(t) = link {
+        rcx.follow(ui, t);
     }
     r
 }
@@ -643,10 +747,21 @@ fn render_inline(ui: &mut egui::Ui, inl: &Inline, rcx: &mut Rcx) -> Rect {
         }
         let r = match chunk {
             Chunk::Text(rich) => render_rich(ui, rich, rcx),
-            Chunk::Image { url, alt, width, height } => render_image(ui, url, alt, *width, *height, rcx),
+            Chunk::Image { url, alt, title, width, height, link } => render_image(
+                ui,
+                ImageRef {
+                    url,
+                    alt,
+                    title: title.as_deref(),
+                    width: *width,
+                    height: *height,
+                    link: link.as_ref(),
+                },
+                rcx,
+            ),
             Chunk::Media(card) => {
                 let top = ui.cursor().top();
-                media::render_card(ui, card, rcx.th, rcx.base_dir);
+                media::render_card_opts(ui, card, rcx.th, rcx.base_dir, rcx.allow_local_open);
                 let bottom = ui.cursor().top();
                 Rect::from_x_y_ranges(ui.max_rect().x_range(), top..=bottom.max(top + 1.0))
             }

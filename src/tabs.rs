@@ -179,10 +179,12 @@ pub fn show(ui: &mut egui::Ui, docs: &[Document], active: usize) -> Option<TabAc
                             action = Some(TabAction::CloseRight(i));
                             ui.close();
                         }
-                        ui.separator();
-                        if ui.button("保存").clicked() {
-                            action = Some(TabAction::Save(i));
-                            ui.close();
+                        if !doc.is_manual {
+                            ui.separator();
+                            if ui.button("保存").clicked() {
+                                action = Some(TabAction::Save(i));
+                                ui.close();
+                            }
                         }
                         if let Some(path) = &doc.path {
                             if ui.button("复制文件路径").clicked() {

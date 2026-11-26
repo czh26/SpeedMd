@@ -184,8 +184,15 @@ fn read_flac_duration<R: Read + Seek>(r: &mut R) -> Option<f64> {
     }
 }
 
-pub fn render_card(ui: &mut egui::Ui, card: &MediaCard, th: &Theme, base_dir: Option<&Path>) {
+pub fn render_card_opts(
+    ui: &mut egui::Ui,
+    card: &MediaCard,
+    th: &Theme,
+    base_dir: Option<&Path>,
+    allow_local_open: bool,
+) {
     let is_remote = card.url.starts_with("http://") || card.url.starts_with("https://") || card.url.starts_with("file://");
+    let can_open = is_remote || allow_local_open;
     let resolved_path = (!is_remote).then(|| {
         let decoded = crate::markdown::percent_decode(&card.url);
         let p = Path::new(&decoded);
@@ -223,7 +230,12 @@ pub fn render_card(ui: &mut egui::Ui, card: &MediaCard, th: &Theme, base_dir: Op
             if let Some(poster) = &card.poster
                 && !poster.is_empty()
             {
-                let uri = if poster.starts_with("http://") || poster.starts_with("https://") || poster.starts_with("file://") {
+                let uri = if poster.starts_with("bytes://") {
+                    if poster.starts_with("bytes://mdpad/") {
+                        crate::manual::ensure_demo_images(ui.ctx());
+                    }
+                    poster.clone()
+                } else if poster.starts_with("http://") || poster.starts_with("https://") || poster.starts_with("file://") {
                     poster.clone()
                 } else {
                     let dec = crate::markdown::percent_decode(poster);
@@ -233,7 +245,13 @@ pub fn render_card(ui: &mut egui::Ui, card: &MediaCard, th: &Theme, base_dir: Op
                     };
                     format!("file://{}", p.to_string_lossy().replace('\\', "/"))
                 };
-                ui.add(egui::Image::new(uri).max_height(180.0).corner_radius(4));
+                ui.add(
+                    egui::Image::new(uri)
+                        .fit_to_original_size(1.0)
+                        .max_width(ui.available_width())
+                        .max_height(180.0)
+                        .corner_radius(4),
+                );
                 ui.add_space(6.0);
             }
             ui.horizontal(|ui| {
@@ -246,6 +264,7 @@ pub fn render_card(ui: &mut egui::Ui, card: &MediaCard, th: &Theme, base_dir: Op
                                 .font(FontId::new(th.size, bold_family()))
                                 .color(th.heading),
                         );
+                        ui.add_space(6.0);
                         ui.label(RichText::new(format!("[{kind_label}]")).size(th.size * 0.8).color(th.accent));
                         if let Some(secs) = duration {
                             ui.label(RichText::new(format!("  ⏱ {}", format_duration(secs))).size(th.size * 0.85).color(th.weak));
@@ -254,20 +273,26 @@ pub fn render_card(ui: &mut egui::Ui, card: &MediaCard, th: &Theme, base_dir: Op
                     ui.label(RichText::new(&card.url).size(th.size * 0.8).color(th.weak));
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new("▶ 打开").size(th.size * 0.9).color(th.link));
+                    let action_text = if can_open { "▶ 打开" } else { "演示卡片" };
+                    let action_col = if can_open { th.link } else { th.weak };
+                    ui.label(RichText::new(action_text).size(th.size * 0.9).color(action_col));
                 });
             });
         })
         .response
         .interact(Sense::click());
 
-    if resp.hovered() {
+    if resp.hovered() && can_open {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
     let clicked = resp.clicked();
-    let tip = format!("使用系统默认程序打开：{}", card.url);
+    let tip = if can_open {
+        format!("使用系统默认程序打开：{}", card.url)
+    } else {
+        format!("本地媒体路径示例：{}（请替换成你自己的文件路径；说明书中不打开本地文件）", card.url)
+    };
     resp.on_hover_text(tip);
-    if clicked {
+    if clicked && can_open {
         let target = match resolved_path {
             Some(p) => p.to_string_lossy().into_owned(),
             None => card.url.clone(),

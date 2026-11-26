@@ -207,32 +207,76 @@ fn push(job: &mut LayoutJob, s: &str, format: TextFormat) {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FrontKind {
+    None,
+    Yaml,
+    Toml,
+}
+
 fn build(text: &str, dark: bool, font: &FontId) -> LayoutJob {
     let p = Palette::new(dark);
     let mut job = LayoutJob::default();
     let code_fmt = TextFormat { background: p.code_bg, ..fmt(font, p.code) };
     let mut in_fence = false;
-    // YAML Front Matter：文档开头 --- 到下一个 --- / ...
-    let mut in_front = text.starts_with("---\n") || text.starts_with("---\r\n");
+    // Front Matter：文档开头的 YAML (---) 或 TOML (+++)
+    let mut front = if text.starts_with("---\n") || text.starts_with("---\r\n") {
+        FrontKind::Yaml
+    } else if text.starts_with("+++\n") || text.starts_with("+++\r\n") {
+        FrontKind::Toml
+    } else {
+        FrontKind::None
+    };
     let mut first = true;
 
     for line in text.split_inclusive('\n') {
         let content = line.trim_end_matches(['\n', '\r']);
         let trimmed = content.trim_start();
 
-        if in_front {
-            let is_end = !first && (content == "---" || content == "...");
-            if let (false, false, Some(colon)) = (first, is_end, content.find(':')) {
-                push(&mut job, &line[..colon], fmt(font, p.link));
-                push(&mut job, &line[colon..], fmt(font, p.quote));
-            } else {
-                push(&mut job, line, fmt(font, p.rule));
+        match front {
+            FrontKind::Yaml => {
+                let is_end = !first && (content == "---" || content == "...");
+                if !first && !is_end && trimmed.starts_with('#') {
+                    push(&mut job, line, fmt(font, p.quote));
+                } else if !first
+                    && !is_end
+                    && !trimmed.starts_with('-')
+                    && let Some(colon) = content.find(':')
+                    && !content[..colon].contains("://")
+                {
+                    push(&mut job, &line[..colon], fmt(font, p.link));
+                    push(&mut job, &line[colon..], fmt(font, p.quote));
+                } else {
+                    push(&mut job, line, fmt(font, p.rule));
+                }
+                first = false;
+                if is_end {
+                    front = FrontKind::None;
+                }
+                continue;
             }
-            first = false;
-            if is_end {
-                in_front = false;
+            FrontKind::Toml => {
+                let is_end = !first && content == "+++";
+                if !first && !is_end && trimmed.starts_with('#') {
+                    push(&mut job, line, fmt(font, p.quote));
+                } else if !first && !is_end && trimmed.starts_with('[') && trimmed.ends_with(']') {
+                    push(&mut job, line, fmt(font, p.heading));
+                } else if !first
+                    && !is_end
+                    && let Some(eq) = content.find('=')
+                {
+                    push(&mut job, &line[..eq], fmt(font, p.link));
+                    push(&mut job, &line[eq..], fmt(font, p.quote));
+                } else {
+                    push(&mut job, line, fmt(font, p.rule));
+                }
+                first = false;
+                if is_end {
+                    front = FrontKind::None;
+                }
+                continue;
             }
-            continue;
+            FrontKind::None => {}
         }
         first = false;
 
@@ -283,6 +327,88 @@ fn build(text: &str, dark: bool, font: &FontId) -> LayoutJob {
     job
 }
 
+/// 生成说明书源码框的高亮 LayoutJob：与编辑器同款配色，并将行尾空格渲染为淡色 `·` 符号。
+pub fn highlight_manual_source(code: &str, dark: bool, font: &FontId) -> LayoutJob {
+    let base = build(code, dark, font);
+    if base.sections.is_empty() {
+        return base;
+    }
+
+    let mut trailing_ranges: Vec<Range<usize>> = Vec::new();
+    let mut line_start = 0usize;
+    for line in code.split_inclusive('\n') {
+        let no_eol = line.trim_end_matches(['\n', '\r']);
+        let trimmed = no_eol.trim_end_matches(' ');
+        if trimmed.len() < no_eol.len() {
+            trailing_ranges.push((line_start + trimmed.len())..(line_start + no_eol.len()));
+        }
+        line_start += line.len();
+    }
+
+    if trailing_ranges.is_empty() {
+        return base;
+    }
+
+    let ws_color = if dark {
+        Color32::from_rgba_unmultiplied(160, 170, 190, 125)
+    } else {
+        Color32::from_rgba_unmultiplied(100, 115, 135, 135)
+    };
+
+    let mut out = LayoutJob::default();
+    let mut ti = 0usize;
+
+    for sec in &base.sections {
+        let s_start = sec.byte_range.start.0;
+        let s_end = sec.byte_range.end.0;
+        let mut pos = s_start;
+        let mut first_piece = true;
+
+        while ti < trailing_ranges.len() && trailing_ranges[ti].end <= pos {
+            ti += 1;
+        }
+
+        let mut k = ti;
+        while k < trailing_ranges.len() && trailing_ranges[k].start < s_end {
+            let tr = &trailing_ranges[k];
+            if tr.start > pos {
+                out.append(
+                    &code[pos..tr.start],
+                    if first_piece { sec.leading_space } else { 0.0 },
+                    sec.format.clone(),
+                );
+                first_piece = false;
+                pos = tr.start;
+            }
+            let ov_end = tr.end.min(s_end);
+            if ov_end > pos {
+                let dots: String = std::iter::repeat_n('\u{00B7}', ov_end - pos).collect();
+                let mut wf = sec.format.clone();
+                wf.color = ws_color;
+                out.append(&dots, if first_piece { sec.leading_space } else { 0.0 }, wf);
+                first_piece = false;
+                pos = ov_end;
+            }
+            if tr.end <= s_end {
+                k += 1;
+                ti = k;
+            } else {
+                break;
+            }
+        }
+
+        if pos < s_end {
+            out.append(
+                &code[pos..s_end],
+                if first_piece { sec.leading_space } else { 0.0 },
+                sec.format.clone(),
+            );
+        }
+    }
+
+    out
+}
+
 fn is_heading(s: &str) -> bool {
     let n = s.bytes().take_while(|&b| b == b'#').count();
     (1..=6).contains(&n) && matches!(s.as_bytes().get(n), None | Some(b' ') | Some(b'\t'))
@@ -319,6 +445,16 @@ fn list_marker_len(s: &str) -> usize {
     }
 }
 
+fn is_escaped_at(b: &[u8], i: usize) -> bool {
+    let mut cnt = 0usize;
+    let mut k = i;
+    while k > 0 && b[k - 1] == b'\\' {
+        cnt += 1;
+        k -= 1;
+    }
+    cnt % 2 == 1
+}
+
 /// 行内元素：`code`、**粗体** / __粗体__、[链接](url) / ![图片](url)。
 /// 只在 ASCII 字节处切片，因此对中文等多字节字符是安全的。
 fn inline(job: &mut LayoutJob, s: &str, p: &Palette, font: &FontId, code_fmt: &TextFormat) {
@@ -327,6 +463,10 @@ fn inline(job: &mut LayoutJob, s: &str, p: &Palette, font: &FontId, code_fmt: &T
     let (mut i, mut start) = (0usize, 0usize);
 
     while i < b.len() {
+        if is_escaped_at(b, i) {
+            i += 1;
+            continue;
+        }
         let mut span: Option<(usize, TextFormat)> = None;
         match b[i] {
             b'`' => {
@@ -449,5 +589,19 @@ mod tests {
             .map(|s| s.byte_range.start.0..s.byte_range.end.0)
             .collect();
         assert_eq!(colored, vec![8..13, 24..29]);
+    }
+
+    #[test]
+    fn manual_source_marks_trailing_spaces_only_and_keeps_invariants() {
+        let code = "  缩进保留  \n普通行  \n+++ \ntitle = \"hi\"";
+        let job = highlight_manual_source(code, false, &FontId::monospace(14.0));
+        assert_eq!(job.text, "  缩进保留··\n普通行··\n+++·\ntitle = \"hi\"");
+        let mut cursor = 0usize;
+        for sec in &job.sections {
+            assert_eq!(sec.byte_range.start.0, cursor);
+            assert!(sec.byte_range.start.0 <= sec.byte_range.end.0);
+            cursor = sec.byte_range.end.0;
+        }
+        assert_eq!(cursor, job.text.len());
     }
 }
