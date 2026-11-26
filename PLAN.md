@@ -293,4 +293,4 @@ cargo test                     # stats / keymap / find / textproc / html_inline 
 - [ ] 阶段 8：自定义快捷键
 
 ## 7. 实施中的决定
-（执行过程中补充）
+- **Git 推送**（2026-11-26 用户决定）：每个阶段只在本地 `git commit`，**不推送**到 GitHub；等用户明确要求时再执行 `git push origin main`。
