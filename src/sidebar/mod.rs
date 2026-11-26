@@ -217,6 +217,10 @@ impl SidebarState {
             ui.painter()
                 .vline(panel_rect.right() - 0.5, panel_rect.y_range(), Stroke::new(1.0, sc.outer_border));
         }
+        if let theme::DividerStyle::GlassInset { top_highlight, .. } = spec.divider {
+            ui.painter()
+                .hline(panel_rect.x_range(), panel_rect.top() + 0.6, Stroke::new(1.0, top_highlight));
+        }
 
         (action, panel_rect.width())
     }

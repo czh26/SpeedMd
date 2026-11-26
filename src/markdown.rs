@@ -6,6 +6,7 @@ use crate::html_inline::{
     detect_media_kind, parse_css_color, parse_dim, parse_html_tag, parse_inline_style, MediaKind,
 };
 use crate::media::MediaCard;
+use crate::theme::{AlertColors, ThemeId, ThemeSpec};
 use eframe::egui::{text::LayoutJob, Align, Color32, FontFamily, FontId, Stroke, TextFormat};
 use htmd::node::{Node, NodeType};
 use pulldown_cmark::{Alignment, BlockQuoteKind, CodeBlockKind, Event, MetadataBlockKind, Options, Parser, Tag, TagEnd};
@@ -21,7 +22,7 @@ pub fn bold_family() -> FontFamily {
 
 #[derive(Clone)]
 pub struct Theme {
-    pub dark: bool,
+    pub theme_id: ThemeId,
     pub size: f32,
     pub line_height_factor: f32,
     pub para_spacing: f32,
@@ -31,60 +32,50 @@ pub struct Theme {
     pub link: Color32,
     pub code: Color32,
     pub code_bg: Color32,
+    pub code_border: Color32,
+    pub callout_bg: Color32,
     pub mark_bg: Color32,
     pub mark_fg: Color32,
     pub quote: Color32,
     pub border: Color32,
     pub accent: Color32,
+    pub on_accent: Color32,
     pub panel_bg: Color32,
+    pub table_head_bg: Color32,
+    pub table_stripe_bg: Color32,
+    pub alerts: AlertColors,
 }
 
 impl Theme {
-    #[allow(dead_code)]
-    pub fn new(dark: bool, size: f32) -> Self {
-        Self::with_spacing(dark, size, 1.6, 0.75)
+    pub fn from_theme(theme_id: ThemeId, size: f32, line_height_factor: f32, para_spacing: f32) -> Self {
+        Self::from_spec(theme_id.spec(), size, line_height_factor, para_spacing)
     }
 
-    pub fn with_spacing(dark: bool, size: f32, line_height_factor: f32, para_spacing: f32) -> Self {
-        let c = Color32::from_rgb;
-        if dark {
-            Self {
-                dark,
-                size,
-                line_height_factor,
-                para_spacing,
-                text: c(0xd8, 0xdb, 0xdf),
-                weak: c(0x8b, 0x94, 0x9e),
-                heading: c(0xf0, 0xf2, 0xf4),
-                link: c(0x58, 0xa6, 0xff),
-                code: c(0xff, 0x9e, 0x80),
-                code_bg: c(0x2b, 0x2f, 0x36),
-                mark_bg: c(0x8a, 0x72, 0x10),
-                mark_fg: c(0xff, 0xff, 0xff),
-                quote: c(0x9a, 0xa2, 0xab),
-                border: c(0x44, 0x4c, 0x56),
-                accent: c(0x38, 0x8b, 0xfd),
-                panel_bg: c(0x22, 0x26, 0x2c),
-            }
-        } else {
-            Self {
-                dark,
-                size,
-                line_height_factor,
-                para_spacing,
-                text: c(0x24, 0x29, 0x2f),
-                weak: c(0x65, 0x6d, 0x76),
-                heading: c(0x11, 0x14, 0x18),
-                link: c(0x09, 0x69, 0xda),
-                code: c(0xc7, 0x25, 0x4e),
-                code_bg: c(0xf0, 0xf2, 0xf4),
-                mark_bg: c(0xff, 0xec, 0x80),
-                mark_fg: c(0x1f, 0x23, 0x28),
-                quote: c(0x65, 0x6d, 0x76),
-                border: c(0xd0, 0xd7, 0xde),
-                accent: c(0x09, 0x69, 0xda),
-                panel_bg: c(0xf6, 0xf8, 0xfa),
-            }
+    pub fn from_spec(spec: &ThemeSpec, size: f32, line_height_factor: f32, para_spacing: f32) -> Self {
+        let p = &spec.preview;
+        Self {
+            theme_id: spec.id,
+            size,
+            line_height_factor,
+            para_spacing,
+            text: p.text,
+            weak: p.weak,
+            heading: p.heading,
+            link: p.link,
+            code: p.code,
+            code_bg: p.code_bg,
+            code_border: p.code_border,
+            callout_bg: p.callout_bg,
+            mark_bg: p.mark_bg,
+            mark_fg: p.mark_fg,
+            quote: p.quote,
+            border: p.border,
+            accent: p.accent,
+            on_accent: p.on_accent,
+            panel_bg: p.panel_bg,
+            table_head_bg: p.table_head_bg,
+            table_stripe_bg: p.table_stripe_bg,
+            alerts: p.alerts,
         }
     }
 
@@ -1996,7 +1987,7 @@ mod tests {
     #[test]
     fn block_ranges_and_heading_offsets_match_source() {
         let src = "# 标题一\n\n第一段\n\n```rust\nlet x = 1;\n```\n\n## 标题二\n";
-        let th = Theme::new(false, 16.0);
+        let th = Theme::from_theme(ThemeId::ZenHorizon, 16.0, 1.6, 0.75);
         let doc = parse(src, &th, &ParseOptions { sup_sub: false, front_matter: true });
         assert_eq!(doc.blocks.len(), 4);
         assert_eq!(doc.block_ranges.len(), 4);
@@ -2011,7 +2002,7 @@ mod tests {
     #[test]
     fn details_container_and_dom_html_blocks_parse_cleanly() {
         let md = "<details open>\n<summary>展开示例</summary>\n\n内部 **Markdown** 段落\n\n- 列表项\n\n</details>\n\n<!-- 隐藏注释 -->\n\n<div align=\"center\">\n\n居中内容\n\n</div>\n\n<video src=\"demo.mp4\" title=\"演示\"></video>\n";
-        let th = Theme::new(false, 16.0);
+        let th = Theme::from_theme(ThemeId::ZenHorizon, 16.0, 1.6, 0.75);
         let doc = parse(md, &th, &ParseOptions { sup_sub: false, front_matter: true });
         assert_eq!(doc.blocks.len(), doc.block_ranges.len());
         assert!(matches!(doc.blocks[0], Block::Details { default_open: true, .. }));
@@ -2026,7 +2017,7 @@ mod tests {
     #[test]
     fn escaped_extensions_image_links_titles_and_toml_front_matter() {
         let md = "+++\ntitle = \"TOML 测试\"\n[author]\nname = \"MdPad\"\n+++\n\n\\==非高亮== \\:smile: [链接](https://example.com \"提示标题\") [![alt](https://example.com/a.png \"图标题\")](https://rust-lang.org)\n";
-        let th = Theme::new(false, 16.0);
+        let th = Theme::from_theme(ThemeId::ZenHorizon, 16.0, 1.6, 0.75);
         let doc = parse(md, &th, &ParseOptions { sup_sub: true, front_matter: true });
         assert!(matches!(doc.blocks[0], Block::FrontMatter(_)));
         let Block::Paragraph(inl) = &doc.blocks[1] else { panic!("expected paragraph") };

@@ -1,6 +1,7 @@
 //! 查找与替换：防抖匹配、正则替换、状态缓存与栏位界面。
 
-use eframe::egui::{self, Color32, Key, Stroke};
+use crate::theme;
+use eframe::egui::{self, Key, Stroke};
 use regex::{Regex, RegexBuilder};
 use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher;
@@ -238,9 +239,10 @@ pub fn bar_ui(ui: &mut egui::Ui, state: &mut FindState) -> Option<FindAction> {
     }
     let mut action: Option<FindAction> = None;
 
+    let spec = theme::current(ui.ctx());
     egui::Frame::new()
-        .fill(ui.visuals().panel_fill)
-        .stroke(Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color))
+        .fill(spec.find_bar_bg)
+        .stroke(Stroke::new(1.0, spec.border))
         .inner_margin(egui::Margin::symmetric(10, 6))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -248,10 +250,10 @@ pub fn bar_ui(ui: &mut egui::Ui, state: &mut FindState) -> Option<FindAction> {
                     .desired_width(220.0)
                     .hint_text("查找…");
                 if state.error.is_some() {
-                    query_edit = query_edit.text_color(Color32::from_rgb(0xe0, 0x48, 0x48));
+                    query_edit = query_edit.text_color(spec.semantic.error);
                 }
                 let q_frame = if state.error.is_some() {
-                    Stroke::new(1.5, Color32::from_rgb(0xe0, 0x48, 0x48))
+                    Stroke::new(1.5, spec.semantic.error)
                 } else {
                     Stroke::NONE
                 };
@@ -292,11 +294,11 @@ pub fn bar_ui(ui: &mut egui::Ui, state: &mut FindState) -> Option<FindAction> {
                 }
 
                 let count_text = if let Some(err) = &state.error {
-                    egui::RichText::new(format!("正则错误：{err}")).color(Color32::from_rgb(0xe0, 0x48, 0x48))
+                    egui::RichText::new(format!("正则错误：{err}")).color(spec.semantic.error)
                 } else if state.query.is_empty() {
                     egui::RichText::new("").weak()
                 } else if state.matches.is_empty() {
-                    egui::RichText::new("无匹配").color(Color32::from_rgb(0xe0, 0x9a, 0x3e))
+                    egui::RichText::new("无匹配").color(spec.semantic.warn)
                 } else {
                     egui::RichText::new(format!("{} / {}", state.current + 1, state.matches.len())).weak()
                 };

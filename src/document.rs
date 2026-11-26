@@ -81,7 +81,7 @@ impl ParseCache {
             }
         }
         let started = Instant::now();
-        let th = Theme::with_spacing(cfg.theme.is_dark(), cfg.font_size, cfg.line_height, cfg.para_spacing);
+        let th = Theme::from_theme(cfg.theme, cfg.font_size, cfg.line_height, cfg.para_spacing);
         let doc = markdown::parse(doc_text, &th, cfg.opts);
         if self.last_version != version || self.cached.is_none() {
             self.last_parse_ms = (started.elapsed().as_secs_f32() * 1000.0).max(0.05);

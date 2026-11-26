@@ -1,5 +1,6 @@
 //! 编辑器里的轻量 Markdown 语法高亮（逐行扫描，O(n)，按文档版本号缓存 + 查找匹配高亮叠加）。
 
+use crate::theme::{EditorPalette, ThemeId};
 use eframe::egui::{
     text::{ByteIndex, LayoutJob, LayoutSection},
     Color32, FontId, Stroke, TextFormat,
@@ -9,51 +10,6 @@ use std::hash::{Hash, Hasher};
 use std::ops::Range;
 
 const MAX_FIND_HIGHLIGHTS: usize = 10_000;
-
-struct Palette {
-    normal: Color32,
-    heading: Color32,
-    code: Color32,
-    code_bg: Color32,
-    quote: Color32,
-    marker: Color32,
-    link: Color32,
-    bold: Color32,
-    rule: Color32,
-    mark_bg: Color32,
-}
-
-impl Palette {
-    fn new(dark: bool) -> Self {
-        if dark {
-            Self {
-                normal: Color32::from_rgb(0xd4, 0xd4, 0xd4),
-                heading: Color32::from_rgb(0x61, 0xaf, 0xef),
-                code: Color32::from_rgb(0xe5, 0xc0, 0x7b),
-                code_bg: Color32::from_rgb(0x2a, 0x2d, 0x33),
-                quote: Color32::from_rgb(0x8a, 0x93, 0x9e),
-                marker: Color32::from_rgb(0xc6, 0x78, 0xdd),
-                link: Color32::from_rgb(0x56, 0xb6, 0xc2),
-                bold: Color32::from_rgb(0xff, 0xff, 0xff),
-                rule: Color32::from_rgb(0x6b, 0x72, 0x80),
-                mark_bg: Color32::from_rgb(0x6b, 0x5a, 0x12),
-            }
-        } else {
-            Self {
-                normal: Color32::from_rgb(0x24, 0x29, 0x2e),
-                heading: Color32::from_rgb(0x00, 0x5c, 0xc5),
-                code: Color32::from_rgb(0xb3, 0x1d, 0x28),
-                code_bg: Color32::from_rgb(0xf0, 0xf1, 0xf3),
-                quote: Color32::from_rgb(0x6a, 0x73, 0x7d),
-                marker: Color32::from_rgb(0x8a, 0x3f, 0xc8),
-                link: Color32::from_rgb(0x03, 0x66, 0xd6),
-                bold: Color32::from_rgb(0x00, 0x00, 0x00),
-                rule: Color32::from_rgb(0x95, 0x9d, 0xa5),
-                mark_bg: Color32::from_rgb(0xff, 0xef, 0x99),
-            }
-        }
-    }
-}
 
 pub struct Highlighter {
     key: u64,
@@ -85,18 +41,18 @@ impl Highlighter {
         &mut self,
         version: u64,
         text: &str,
-        dark: bool,
+        theme: ThemeId,
         font: &FontId,
         overlay: Option<FindOverlay<'_>>,
     ) -> LayoutJob {
         let mut h = DefaultHasher::new();
         version.hash(&mut h);
-        dark.hash(&mut h);
+        theme.hash(&mut h);
         font.size.to_bits().hash(&mut h);
         font.family.hash(&mut h);
         let key = h.finish();
         if key != self.key {
-            self.job = build(text, dark, font);
+            self.job = build(text, theme, font);
             self.key = key;
             self.overlay_cache_key = u64::MAX;
         }
@@ -107,7 +63,7 @@ impl Highlighter {
         (key, ov.key, ov.current).hash(&mut oh);
         let ok = oh.finish();
         if ok != self.overlay_cache_key {
-            self.overlay_job = apply_find_overlay(&self.job, ov.matches, ov.current, dark);
+            self.overlay_job = apply_find_overlay(&self.job, ov.matches, ov.current, theme);
             self.overlay_cache_key = ok;
         }
         self.overlay_job.clone()
@@ -119,7 +75,7 @@ pub fn apply_find_overlay(
     base: &LayoutJob,
     matches: &[Range<usize>],
     current_match: Option<usize>,
-    dark: bool,
+    theme: ThemeId,
 ) -> LayoutJob {
     if matches.is_empty() || base.sections.is_empty() {
         return base.clone();
@@ -127,16 +83,9 @@ pub fn apply_find_overlay(
     let limit = matches.len().min(MAX_FIND_HIGHLIGHTS);
     let capped = &matches[..limit];
 
-    let match_bg = if dark {
-        Color32::from_rgb(0x5c, 0x4b, 0x16)
-    } else {
-        Color32::from_rgb(0xff, 0xe8, 0x7a)
-    };
-    let cur_bg = if dark {
-        Color32::from_rgb(0x9a, 0x54, 0x12)
-    } else {
-        Color32::from_rgb(0xff, 0xa9, 0x40)
-    };
+    let ed = &theme.spec().editor;
+    let match_bg = ed.find_match_bg;
+    let cur_bg = ed.find_cur_bg;
 
     let mut out = Vec::with_capacity(base.sections.len() + capped.len().min(4096) * 2);
     let mut mi = 0usize;
@@ -214,8 +163,8 @@ enum FrontKind {
     Toml,
 }
 
-fn build(text: &str, dark: bool, font: &FontId) -> LayoutJob {
-    let p = Palette::new(dark);
+fn build(text: &str, theme: ThemeId, font: &FontId) -> LayoutJob {
+    let p = &theme.spec().editor;
     let mut job = LayoutJob::default();
     let code_fmt = TextFormat { background: p.code_bg, ..fmt(font, p.code) };
     let mut in_fence = false;
@@ -310,7 +259,7 @@ fn build(text: &str, dark: bool, font: &FontId) -> LayoutJob {
             let indent = content.len() - trimmed.len();
             let cut = indent + end + 2;
             push(&mut job, &line[..cut], fmt(font, p.link));
-            inline(&mut job, &line[cut..], &p, font, &code_fmt);
+            inline(&mut job, &line[cut..], p, font, &code_fmt);
             continue;
         }
 
@@ -319,17 +268,17 @@ fn build(text: &str, dark: bool, font: &FontId) -> LayoutJob {
         if marker > 0 {
             push(&mut job, &line[..indent], fmt(font, p.normal));
             push(&mut job, &line[indent..indent + marker], fmt(font, p.marker));
-            inline(&mut job, &line[indent + marker..], &p, font, &code_fmt);
+            inline(&mut job, &line[indent + marker..], p, font, &code_fmt);
         } else {
-            inline(&mut job, line, &p, font, &code_fmt);
+            inline(&mut job, line, p, font, &code_fmt);
         }
     }
     job
 }
 
 /// 生成说明书源码框的高亮 LayoutJob：与编辑器同款配色，并将行尾空格渲染为淡色 `·` 符号。
-pub fn highlight_manual_source(code: &str, dark: bool, font: &FontId) -> LayoutJob {
-    let base = build(code, dark, font);
+pub fn highlight_manual_source(code: &str, theme: ThemeId, font: &FontId) -> LayoutJob {
+    let base = build(code, theme, font);
     if base.sections.is_empty() {
         return base;
     }
@@ -349,11 +298,7 @@ pub fn highlight_manual_source(code: &str, dark: bool, font: &FontId) -> LayoutJ
         return base;
     }
 
-    let ws_color = if dark {
-        Color32::from_rgba_unmultiplied(160, 170, 190, 125)
-    } else {
-        Color32::from_rgba_unmultiplied(100, 115, 135, 135)
-    };
+    let ws_color = theme.spec().editor.trailing_ws;
 
     let mut out = LayoutJob::default();
     let mut ti = 0usize;
@@ -457,7 +402,7 @@ fn is_escaped_at(b: &[u8], i: usize) -> bool {
 
 /// 行内元素：`code`、**粗体** / __粗体__、[链接](url) / ![图片](url)。
 /// 只在 ASCII 字节处切片，因此对中文等多字节字符是安全的。
-fn inline(job: &mut LayoutJob, s: &str, p: &Palette, font: &FontId, code_fmt: &TextFormat) {
+fn inline(job: &mut LayoutJob, s: &str, p: &EditorPalette, font: &FontId, code_fmt: &TextFormat) {
     let b = s.as_bytes();
     let normal = fmt(font, p.normal);
     let (mut i, mut start) = (0usize, 0usize);
@@ -570,7 +515,7 @@ mod tests {
         let job = hl.highlight(
             1,
             text,
-            false,
+            ThemeId::ZenHorizon,
             &FontId::monospace(15.0),
             Some(FindOverlay { matches: &matches, current: Some(1), key: 42 }),
         );
@@ -594,14 +539,16 @@ mod tests {
     #[test]
     fn manual_source_marks_trailing_spaces_only_and_keeps_invariants() {
         let code = "  缩进保留  \n普通行  \n+++ \ntitle = \"hi\"";
-        let job = highlight_manual_source(code, false, &FontId::monospace(14.0));
-        assert_eq!(job.text, "  缩进保留··\n普通行··\n+++·\ntitle = \"hi\"");
-        let mut cursor = 0usize;
-        for sec in &job.sections {
-            assert_eq!(sec.byte_range.start.0, cursor);
-            assert!(sec.byte_range.start.0 <= sec.byte_range.end.0);
-            cursor = sec.byte_range.end.0;
+        for id in ThemeId::ALL {
+            let job = highlight_manual_source(code, id, &FontId::monospace(14.0));
+            assert_eq!(job.text, "  缩进保留··\n普通行··\n+++·\ntitle = \"hi\"");
+            let mut cursor = 0usize;
+            for sec in &job.sections {
+                assert_eq!(sec.byte_range.start.0, cursor);
+                assert!(sec.byte_range.start.0 <= sec.byte_range.end.0);
+                cursor = sec.byte_range.end.0;
+            }
+            assert_eq!(cursor, job.text.len());
         }
-        assert_eq!(cursor, job.text.len());
     }
 }

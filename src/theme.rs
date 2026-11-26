@@ -1,7 +1,5 @@
 //! MdPad「速度与闪电」主题内核：统一空间骨架常量、5 套定稿主题色板与 egui Visuals 缓存。
 
-#![allow(dead_code)] // 阶段 1–3 渐进接入期间保留；阶段 4 全量接入后移除
-
 use eframe::egui::{
     self, pos2, vec2, Color32, CornerRadius, Mesh, Painter, Pos2, Rect, Shadow, Spacing, Stroke, Style, Visuals,
     style::{HandleShape, ScrollStyle, Selection, TextCursorStyle, WidgetVisuals, Widgets},
@@ -90,20 +88,6 @@ impl ThemeId {
             Self::AtelierContrast => 2,
             Self::CarbonGold => 3,
             Self::TitaniumGlass => 4,
-        }
-    }
-
-    pub const fn number(self) -> u8 {
-        self.index() as u8 + 1
-    }
-
-    pub const fn id_str(self) -> &'static str {
-        match self {
-            Self::ZenHorizon => "zen_horizon",
-            Self::ScarletStreak => "scarlet_streak",
-            Self::AtelierContrast => "atelier_contrast",
-            Self::CarbonGold => "carbon_gold",
-            Self::TitaniumGlass => "titanium_glass",
         }
     }
 
@@ -383,7 +367,6 @@ pub struct TabColors {
 
 #[derive(Clone, Copy, Debug)]
 pub struct EditorPalette {
-    pub bg: Color32,
     pub normal: Color32,
     pub heading: Color32,
     pub code: Color32,
@@ -398,9 +381,6 @@ pub struct EditorPalette {
     pub find_cur_bg: Color32,
     pub trailing_ws: Color32,
     pub current_line_bg: Color32,
-    pub cursor: Color32,
-    pub selection_bg: Color32,
-    pub selection_fg: Color32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -426,7 +406,6 @@ impl AlertColors {
 
 #[derive(Clone, Copy, Debug)]
 pub struct PreviewPalette {
-    pub bg: Color32,
     pub text: Color32,
     pub weak: Color32,
     pub heading: Color32,
@@ -545,7 +524,6 @@ pub struct ThemeSpec {
     pub disabled_fg: Color32,
     pub accent: Color32,
     pub secondary_accent: Color32,
-    pub on_accent: Color32,
     pub selection_bg: Color32,
     pub selection_fg: Color32,
     pub cursor_color: Color32,
@@ -620,7 +598,6 @@ const ZEN_HORIZON: ThemeSpec = {
         disabled_fg,
         accent,
         secondary_accent: accent2,
-        on_accent,
         selection_bg,
         selection_fg: text,
         cursor_color: accent,
@@ -681,7 +658,6 @@ const ZEN_HORIZON: ThemeSpec = {
             close_hover_bg: mix(surface, text, 8, 100),
         },
         editor: EditorPalette {
-            bg: canvas,
             normal: text,
             heading: hex(0x110F0E),
             code: hex(0x9A3412),
@@ -696,12 +672,8 @@ const ZEN_HORIZON: ThemeSpec = {
             find_cur_bg: hex(0xFDBA74),
             trailing_ws: alpha(muted, 130),
             current_line_bg: alpha(callout, 135),
-            cursor: accent,
-            selection_bg,
-            selection_fg: text,
         },
         preview: PreviewPalette {
-            bg: canvas,
             text,
             weak: muted,
             heading: hex(0x110F0E),
@@ -819,7 +791,6 @@ const SCARLET_STREAK: ThemeSpec = {
         disabled_fg,
         accent,
         secondary_accent: gold,
-        on_accent,
         selection_bg,
         selection_fg: text,
         cursor_color: accent,
@@ -880,7 +851,6 @@ const SCARLET_STREAK: ThemeSpec = {
             close_hover_bg: alpha(on_accent, 42),
         },
         editor: EditorPalette {
-            bg: canvas,
             normal: text,
             heading: hex(0x09090B),
             code: hex(0xB91C1C),
@@ -895,12 +865,8 @@ const SCARLET_STREAK: ThemeSpec = {
             find_cur_bg: hex(0xFCA5A5),
             trailing_ws: alpha(muted, 130),
             current_line_bg: alpha(callout, 130),
-            cursor: accent,
-            selection_bg,
-            selection_fg: text,
         },
         preview: PreviewPalette {
-            bg: canvas,
             text,
             weak: muted,
             heading: hex(0x09090B),
@@ -1024,7 +990,6 @@ const ATELIER_CONTRAST: ThemeSpec = {
         disabled_fg,
         accent,
         secondary_accent: accent2,
-        on_accent,
         selection_bg,
         selection_fg: text,
         cursor_color: accent,
@@ -1088,7 +1053,6 @@ const ATELIER_CONTRAST: ThemeSpec = {
             close_hover_bg: mix(tab_strip, text, 9, 100),
         },
         editor: EditorPalette {
-            bg: page_bg,
             normal: text,
             heading: hex(0x8C3D24),
             code: hex(0x9A3412),
@@ -1103,12 +1067,8 @@ const ATELIER_CONTRAST: ThemeSpec = {
             find_cur_bg: hex(0xFDBA74),
             trailing_ws: alpha(muted, 130),
             current_line_bg: alpha(code_bg, 140),
-            cursor: accent,
-            selection_bg,
-            selection_fg: text,
         },
         preview: PreviewPalette {
-            bg: page_bg,
             text,
             weak: muted,
             heading: hex(0x161311),
@@ -1226,7 +1186,6 @@ const CARBON_GOLD: ThemeSpec = {
         disabled_fg,
         accent,
         secondary_accent: accent2,
-        on_accent,
         selection_bg,
         selection_fg: text,
         cursor_color: accent,
@@ -1284,7 +1243,6 @@ const CARBON_GOLD: ThemeSpec = {
             close_hover_bg: hover_bg,
         },
         editor: EditorPalette {
-            bg: canvas,
             normal: text,
             heading: accent,
             code: accent2,
@@ -1299,12 +1257,8 @@ const CARBON_GOLD: ThemeSpec = {
             find_cur_bg: hex(0x854D0E),
             trailing_ws: alpha(muted, 130),
             current_line_bg: alpha(chrome, 160),
-            cursor: accent,
-            selection_bg,
-            selection_fg: text,
         },
         preview: PreviewPalette {
-            bg: canvas,
             text,
             weak: muted,
             heading: hex(0xFFFDF8),
@@ -1425,7 +1379,6 @@ const TITANIUM_GLASS: ThemeSpec = {
         disabled_fg,
         accent,
         secondary_accent: accent2,
-        on_accent,
         selection_bg,
         selection_fg: accent,
         cursor_color: accent,
@@ -1492,7 +1445,6 @@ const TITANIUM_GLASS: ThemeSpec = {
             close_hover_bg: alpha(accent, 36),
         },
         editor: EditorPalette {
-            bg: glass_plate,
             normal: text,
             heading: accent,
             code: accent2,
@@ -1507,12 +1459,8 @@ const TITANIUM_GLASS: ThemeSpec = {
             find_cur_bg: hex(0x63636E),
             trailing_ws: alpha(muted, 130),
             current_line_bg: alpha(glass_card, 145),
-            cursor: accent,
-            selection_bg,
-            selection_fg: accent,
         },
         preview: PreviewPalette {
-            bg: glass_plate,
             text,
             weak: muted,
             heading: accent,
@@ -1616,7 +1564,7 @@ fn build_widget_visuals(p: WidgetPalette) -> Widgets {
         inactive: WidgetVisuals {
             weak_bg_fill: p.surface_bg,
             bg_fill: p.surface_bg,
-            bg_stroke: Stroke::new(1.0, alpha(p.border, 180)),
+            bg_stroke: Stroke::new(1.0, mix(p.border, p.text_fg, 18, 100)),
             fg_stroke: Stroke::new(1.0, p.text_fg),
             corner_radius: CornerRadius::same(6),
             expansion: 0.0,
@@ -1872,24 +1820,24 @@ pub fn paint_copy_icon(painter: &Painter, center: Pos2, size: f32, color: Color3
 // 单元测试：WCAG 2.1 对比度 & 容错反序列化
 // ============================================================================
 
-pub fn srgb_luminance(c: Color32) -> f64 {
-    let ch = |u: u8| {
-        let v = u as f64 / 255.0;
-        if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
-    };
-    0.2126 * ch(c.r()) + 0.7152 * ch(c.g()) + 0.0722 * ch(c.b())
-}
-
-pub fn contrast_ratio(a: Color32, b: Color32) -> f64 {
-    let l1 = srgb_luminance(a);
-    let l2 = srgb_luminance(b);
-    let (hi, lo) = if l1 >= l2 { (l1, l2) } else { (l2, l1) };
-    (hi + 0.05) / (lo + 0.05)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn srgb_luminance(c: Color32) -> f64 {
+        let ch = |u: u8| {
+            let v = u as f64 / 255.0;
+            if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * ch(c.r()) + 0.7152 * ch(c.g()) + 0.0722 * ch(c.b())
+    }
+
+    fn contrast_ratio(a: Color32, b: Color32) -> f64 {
+        let l1 = srgb_luminance(a);
+        let l2 = srgb_luminance(b);
+        let (hi, lo) = if l1 >= l2 { (l1, l2) } else { (l2, l1) };
+        (hi + 0.05) / (lo + 0.05)
+    }
 
     #[test]
     fn all_five_themes_meet_wcag_aa_contrast() {
@@ -1901,6 +1849,9 @@ mod tests {
             let sel_ratio = contrast_ratio(s.selection_fg, s.selection_bg);
             let sidebar_body = contrast_ratio(s.sidebar.fg, s.sidebar.bg);
             let sidebar_muted = contrast_ratio(s.sidebar.muted_fg, s.sidebar.bg);
+            eprintln!(
+                "WCAG {id:?}: body/canvas={body_canvas:.2}, body/code={body_code:.2}, muted/canvas={muted_canvas:.2}, sel={sel_ratio:.2}, sidebar={sidebar_body:.2}, sidebar_muted={sidebar_muted:.2}"
+            );
 
             assert!(body_canvas >= 4.5, "{id:?} body/canvas {body_canvas:.2}");
             assert!(body_code >= 4.5, "{id:?} body/code {body_code:.2}");
@@ -1911,7 +1862,9 @@ mod tests {
         }
         // 02 绯红胶囊反白文字对比度
         let s2 = ThemeId::ScarletStreak.spec();
-        assert!(contrast_ratio(s2.on_accent, s2.accent) >= 4.5);
+        let on_acc2 = contrast_ratio(s2.preview.on_accent, s2.accent);
+        eprintln!("WCAG ScarletStreak on_accent/accent={on_acc2:.2}");
+        assert!(on_acc2 >= 4.5);
     }
 
     #[test]

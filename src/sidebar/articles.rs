@@ -2,8 +2,9 @@
 
 use crate::sidebar::files::{is_markdown_file, natural_cmp, paths_eq};
 use crate::stats::strip_front_matter;
+use crate::theme;
 use crate::winutil;
-use eframe::egui::{self, CursorIcon, Sense};
+use eframe::egui::{self, pos2, vec2, CursorIcon, Rect, Sense, Stroke, StrokeKind};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
@@ -265,6 +266,7 @@ impl ArticlesState {
         let query = self.search.trim().to_ascii_lowercase();
         let mut open_path: Option<PathBuf> = None;
 
+        let sc = &theme::current(ctx).sidebar;
         egui::ScrollArea::vertical().id_salt("sidebar_articles_scroll").auto_shrink(false).show(ui, |ui| {
             let mut shown = 0usize;
             for item in &self.items {
@@ -277,14 +279,12 @@ impl ArticlesState {
                 }
                 shown += 1;
                 let selected = active_path.is_some_and(|p| paths_eq(p, &item.path));
-                let bg = if selected {
-                    ui.visuals().selection.bg_fill.gamma_multiply(0.25)
-                } else {
-                    egui::Color32::TRANSPARENT
-                };
-                let resp = egui::Frame::new()
+                let bg = if selected { sc.active_bg } else { egui::Color32::TRANSPARENT };
+                let stroke = if selected { Stroke::new(1.0, sc.border) } else { Stroke::NONE };
+                let card_resp = egui::Frame::new()
                     .fill(bg)
-                    .corner_radius(4)
+                    .stroke(stroke)
+                    .corner_radius(5)
                     .inner_margin(egui::Margin::symmetric(8, 6))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
@@ -294,8 +294,21 @@ impl ArticlesState {
                         }
                         ui.weak(egui::RichText::new(&item.rel_path).small());
                     })
-                    .response
-                    .interact(Sense::click());
+                    .response;
+                if selected {
+                    let r = card_resp.rect;
+                    let bar_x = ui.max_rect().left() - 10.0;
+                    ui.painter().rect_filled(
+                        Rect::from_min_size(pos2(bar_x, r.top() + 4.0), vec2(2.0, (r.height() - 8.0).max(10.0))),
+                        1.0,
+                        sc.active_bar,
+                    );
+                }
+                let resp = card_resp.interact(Sense::click());
+                if resp.hovered() && !selected {
+                    ui.painter()
+                        .rect_stroke(resp.rect, 5.0, Stroke::new(1.0, sc.border), StrokeKind::Inside);
+                }
                 if resp.hovered() {
                     ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
                 }

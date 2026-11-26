@@ -5,13 +5,15 @@
 
 use crate::markdown::{self, bold_family, Block, Chunk, Doc, Inline, Rich, Target, Theme};
 use crate::media;
+use crate::theme::{self, ThemeId};
 use eframe::egui::{
-    self, pos2, text::CCursor, vec2, Align, Align2, Color32, CursorIcon, FontId, Galley, Rect, RichText, Sense, Stroke,
-    StrokeKind, UiBuilder,
+    self, pos2, text::CCursor, vec2, Align, Align2, Color32, CornerRadius, CursorIcon, FontId, Galley, Rect, RichText,
+    Sense, Stroke, StrokeKind, UiBuilder,
 };
 use pulldown_cmark::{Alignment, BlockQuoteKind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 #[derive(Default)]
 pub struct Actions {
@@ -296,28 +298,51 @@ fn render_block(ui: &mut egui::Ui, block: &Block, rcx: &mut Rcx, first: bool) {
         }
         Block::Code { lang, code } => render_code(ui, lang, code, th, rcx.code_line_numbers),
         Block::Quote { kind, blocks } => {
-            let (bar, title) = match kind {
+            let (bar, title_col, title) = match kind {
                 Some(k) => {
-                    let (c, icon, name) = alert_style(*k);
-                    (c, Some((icon, name)))
+                    let c = th.alerts.color_of(*k);
+                    let (icon, name) = alert_meta(*k);
+                    let tcol = match (th.theme_id, *k) {
+                        (ThemeId::ZenHorizon, BlockQuoteKind::Tip) => th.theme_id.spec().secondary_accent,
+                        (ThemeId::ScarletStreak, BlockQuoteKind::Tip) => th.alerts.warning,
+                        _ => c,
+                    };
+                    (c, tcol, Some((icon, name)))
                 }
-                None => (th.border, None),
+                None => (th.border, th.border, None),
             };
-            let fill = if kind.is_some() { bar.gamma_multiply(0.08) } else { Color32::TRANSPARENT };
+            let fill = if kind.is_some() { th.callout_bg } else { Color32::TRANSPARENT };
+            let stroke = if kind.is_some() && matches!(th.theme_id, ThemeId::CarbonGold | ThemeId::TitaniumGlass) {
+                Stroke::new(1.0, th.border)
+            } else {
+                Stroke::NONE
+            };
             let resp = egui::Frame::new()
                 .fill(fill)
-                .inner_margin(egui::Margin { left: 16, right: 10, top: 6, bottom: 6 })
+                .stroke(stroke)
+                .corner_radius(if kind.is_some() { 8 } else { 0 })
+                .inner_margin(egui::Margin { left: 16, right: 12, top: 8, bottom: 8 })
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     if let Some((icon, name)) = title {
-                        ui.label(RichText::new(format!("{icon}  {name}")).font(FontId::new(size, bold_family())).color(bar));
+                        ui.label(
+                            RichText::new(format!("{icon}  {name}"))
+                                .font(FontId::new(size, bold_family()))
+                                .color(title_col),
+                        );
                         ui.add_space(size * 0.4);
                     }
                     render_blocks(ui, blocks, rcx);
                 })
                 .response;
             let r = resp.rect;
-            ui.painter().rect_filled(Rect::from_min_max(r.left_top(), pos2(r.left() + 4.0, r.bottom())), 2, bar);
+            let bar_rad = if kind.is_some() {
+                CornerRadius { nw: 8, sw: 8, ne: 0, se: 0 }
+            } else {
+                CornerRadius::same(2)
+            };
+            ui.painter()
+                .rect_filled(Rect::from_min_max(r.left_top(), pos2(r.left() + 4.0, r.bottom())), bar_rad, bar);
         }
         Block::List { start, items } => render_list(ui, *start, items, rcx),
         Block::Rule => {
@@ -410,14 +435,13 @@ fn render_details(
         });
 }
 
-pub fn alert_style(k: BlockQuoteKind) -> (Color32, &'static str, &'static str) {
-    let c = Color32::from_rgb;
+pub fn alert_meta(k: BlockQuoteKind) -> (&'static str, &'static str) {
     match k {
-        BlockQuoteKind::Note => (c(0x2f, 0x81, 0xf7), "ℹ", "备注 Note"),
-        BlockQuoteKind::Tip => (c(0x3f, 0xb9, 0x50), "💡", "提示 Tip"),
-        BlockQuoteKind::Important => (c(0xa3, 0x71, 0xf7), "❗", "重要 Important"),
-        BlockQuoteKind::Warning => (c(0xd2, 0x99, 0x22), "⚠", "警告 Warning"),
-        BlockQuoteKind::Caution => (c(0xf8, 0x51, 0x49), "⛔", "注意 Caution"),
+        BlockQuoteKind::Note => ("ℹ", "备注 Note"),
+        BlockQuoteKind::Tip => ("💡", "提示 Tip"),
+        BlockQuoteKind::Important => ("❗", "重要 Important"),
+        BlockQuoteKind::Warning => ("⚠", "警告 Warning"),
+        BlockQuoteKind::Caution => ("⛔", "注意 Caution"),
     }
 }
 
@@ -454,15 +478,12 @@ pub fn is_supported_highlight_lang(lang: &str) -> bool {
 }
 
 fn render_code(ui: &mut egui::Ui, lang: &str, code: &str, th: &Theme, line_numbers: bool) {
+    let spec = th.theme_id.spec();
     let code_size = th.size * 0.88;
     let line_h = th.size * 1.45;
     let font_id = FontId::monospace(code_size);
     let mut job = if is_supported_highlight_lang(lang) {
-        let theme = if th.dark {
-            egui_extras::syntax_highlighting::CodeTheme::dark(code_size)
-        } else {
-            egui_extras::syntax_highlighting::CodeTheme::light(code_size)
-        };
+        let theme = spec.code.to_code_theme(code_size);
         egui_extras::syntax_highlighting::highlight(ui.ctx(), ui.style(), &theme, code, lang)
     } else {
         egui::text::LayoutJob::simple(code.to_string(), font_id.clone(), th.text, f32::INFINITY)
@@ -474,7 +495,8 @@ fn render_code(ui: &mut egui::Ui, lang: &str, code: &str, th: &Theme, line_numbe
 
     let resp = egui::Frame::new()
         .fill(th.code_bg)
-        .corner_radius(6)
+        .stroke(Stroke::new(1.0, th.code_border))
+        .corner_radius(8)
         .inner_margin(egui::Margin { left: 14, right: 14, top: 12, bottom: 12 })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -514,20 +536,50 @@ fn render_code(ui: &mut egui::Ui, lang: &str, code: &str, th: &Theme, line_numbe
         .response;
 
     let r = resp.rect;
-    let btn = Rect::from_min_size(pos2(r.right() - 30.0, r.top() + 4.0), vec2(26.0, 24.0));
+    let btn = Rect::from_min_size(pos2(r.right() - 30.0, r.top() + 5.0), vec2(24.0, 22.0));
     let id = ui.scope_id().with(("copy", code.as_ptr() as usize));
     let b = ui.interact(btn, id, Sense::click());
-    let hovered = b.hovered() || resp.hovered() || ui.rect_contains_pointer(r);
-    if hovered {
-        let color = if b.hovered() { th.text } else { th.weak };
-        ui.painter().text(btn.center(), Align2::CENTER_CENTER, "🗐", FontId::proportional(th.size), color);
+    if b.hovered() {
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
-    if !lang.is_empty() {
-        let x = if hovered { btn.left() - 4.0 } else { r.right() - 10.0 };
-        ui.painter().text(pos2(x, r.top() + 8.0), Align2::RIGHT_TOP, lang, FontId::proportional(th.size * 0.72), th.weak);
+    let copied_at: Option<Instant> = ui.ctx().data(|d| d.get_temp(id));
+    let copied = copied_at.is_some_and(|t| t.elapsed() < Duration::from_millis(1500));
+    if copied {
+        ui.ctx().request_repaint_after(Duration::from_millis(300));
     }
-    if b.on_hover_text("复制代码").clicked() {
+
+    if copied {
+        ui.painter().text(
+            btn.center(),
+            Align2::CENTER_CENTER,
+            "✓",
+            FontId::proportional(th.size * 0.9),
+            spec.semantic.success,
+        );
+    } else {
+        let hovered = b.hovered() || resp.hovered() || ui.rect_contains_pointer(r);
+        let color = if b.hovered() {
+            th.text
+        } else if hovered {
+            th.weak
+        } else {
+            th.weak.gamma_multiply(0.70)
+        };
+        theme::paint_copy_icon(ui.painter(), btn.center(), 13.0, color);
+    }
+    if !lang.is_empty() && (b.hovered() || resp.hovered() || ui.rect_contains_pointer(r)) {
+        ui.painter().text(
+            pos2(btn.left() - 5.0, r.top() + 8.0),
+            Align2::RIGHT_TOP,
+            lang,
+            FontId::proportional(th.size * 0.72),
+            th.weak,
+        );
+    }
+    if b.on_hover_text(if copied { "已复制" } else { "复制代码" }).clicked() {
         ui.ctx().copy_text(code.to_string());
+        ui.ctx().data_mut(|d| d.insert_temp(id, Instant::now()));
+        ui.ctx().request_repaint_after(Duration::from_millis(1550));
     }
 }
 
@@ -553,7 +605,7 @@ fn render_list(ui: &mut egui::Ui, start: Option<u64>, items: &[markdown::Item], 
                     if checked {
                         painter.rect_filled(bx, 3, th.accent);
                         let p = |x: f32, y: f32| pos2(bx.left() + bx.width() * x, bx.top() + bx.height() * y);
-                        painter.line(vec![p(0.22, 0.52), p(0.42, 0.72), p(0.78, 0.30)], Stroke::new(2.0, Color32::WHITE));
+                        painter.line(vec![p(0.22, 0.52), p(0.42, 0.72), p(0.78, 0.30)], Stroke::new(2.0, th.on_accent));
                     } else {
                         let stroke = if resp.hovered() && rcx.allow_local_open { th.accent } else { th.weak };
                         painter.rect_stroke(bx, 3, Stroke::new(1.5, stroke), StrokeKind::Inside);
@@ -819,9 +871,9 @@ fn render_table(ui: &mut egui::Ui, aligns: &[Alignment], head: &[Inline], rows: 
             let (row_rect, _) = ui.allocate_exact_size(vec2(total_w, row_h), Sense::hover());
             table_rect = table_rect.union(row_rect);
             if ri == 0 {
-                ui.painter().rect_filled(row_rect, 0, th.panel_bg);
+                ui.painter().rect_filled(row_rect, 0, th.table_head_bg);
             } else if ri % 2 == 0 {
-                ui.painter().rect_filled(row_rect, 0, th.panel_bg.gamma_multiply(0.6));
+                ui.painter().rect_filled(row_rect, 0, th.table_stripe_bg);
             }
             let mut x = row_rect.left();
             for c in 0..ncols {

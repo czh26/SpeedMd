@@ -238,7 +238,15 @@ impl MdApp {
             app.docs[app.active].preview.scroll_to(anchor);
         }
         if let Ok(q) = std::env::var("MDPAD_FIND_QUERY") {
-            app.docs[app.active].find.query = q;
+            let doc = &mut app.docs[app.active];
+            doc.find.query = q;
+            doc.find.open = true;
+            if std::env::var("MDPAD_FIND_REGEX").is_ok() {
+                doc.find.use_regex = true;
+            }
+            if std::env::var("MDPAD_FIND_REPLACE").is_ok() {
+                doc.find.show_replace = true;
+            }
         }
         if let Ok(q) = std::env::var("MDPAD_MANUAL_QUERY") {
             app.manual.query = q;
@@ -1318,6 +1326,7 @@ impl MdApp {
                         picked = Some(id);
                         ui.close();
                     }
+                    row_resp.on_hover_text(format!("{} ({}) · {}", id.cn_name(), id.en_name(), id.mode_tag()));
                 }
             });
         if let Some(id) = picked {
@@ -1407,7 +1416,7 @@ impl MdApp {
             return;
         }
 
-        let path = doc.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "未保存的新文件".into());
+        let full_path = doc.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "未保存的新文件".into());
         let dirty = doc.dirty;
         let full = doc.stats.full;
         let sel = doc.stats.sel;
@@ -1439,9 +1448,35 @@ impl MdApp {
             vec2(pill_w, STATUS_PILL_H),
         );
 
-        let left_clip = Rect::from_min_max(bar_rect.min, pos2((pill_rect.left() - 12.0).max(bar_rect.left()), bar_rect.max.y));
+        let left_max_x = if split_left_active {
+            (bar_rect.left() + left_zone_w - 8.0).min(pill_rect.left() - 12.0)
+        } else {
+            pill_rect.left() - 12.0
+        }
+        .max(bar_rect.left());
+        let left_clip = Rect::from_min_max(bar_rect.min, pos2(left_max_x, bar_rect.max.y));
+        let avail_left_w = (left_max_x - (bar_rect.left() + 12.0) - if dirty { 62.0 } else { 4.0 }).max(24.0);
+        let display_path = if split_left_active
+            && ui.fonts_mut(|f| f.layout_no_wrap(full_path.clone(), pill_font.clone(), left_fg)).size().x > avail_left_w
+            && let Some(p) = &doc.path
+        {
+            let name = p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let with_parent = p
+                .parent()
+                .and_then(|par| par.file_name())
+                .map(|s| format!("…\\{}\\{name}", s.to_string_lossy()))
+                .unwrap_or_else(|| name.clone());
+            if ui.fonts_mut(|f| f.layout_no_wrap(with_parent.clone(), pill_font.clone(), left_fg)).size().x <= avail_left_w {
+                with_parent
+            } else {
+                format!("…\\{name}")
+            }
+        } else {
+            full_path.clone()
+        };
+
         let clipped = ui.painter().with_clip_rect(left_clip);
-        let path_galley = ui.fonts_mut(|f| f.layout_no_wrap(path, pill_font.clone(), left_fg));
+        let path_galley = ui.fonts_mut(|f| f.layout_no_wrap(display_path, pill_font.clone(), left_fg));
         let path_x = bar_rect.left() + 12.0;
         clipped.galley(pos2(path_x, bar_rect.center().y - path_galley.size().y * 0.5), path_galley.clone(), left_fg);
         if dirty {
@@ -1452,6 +1487,10 @@ impl MdApp {
                 pill_font.clone(),
                 spec.semantic.dirty_dot,
             );
+        }
+        if doc.path.is_some() {
+            ui.interact(left_clip, ui.make_persistent_id("status_path_hover"), Sense::hover())
+                .on_hover_text(full_path);
         }
 
         let (pill_fg, bolt_col) = match spec.status_bar {
@@ -1953,10 +1992,14 @@ impl MdApp {
 
         let out_path = winutil::clean_path(&picked);
         let md = doc.text.clone();
-        let dark_theme = full_document && self.export_follow_theme && self.settings.theme.is_dark();
+        let export_theme = if full_document && self.export_follow_theme {
+            self.settings.theme
+        } else {
+            ThemeId::ZenHorizon
+        };
         let opts = crate::export::ExportOptions {
             full_document,
-            dark_theme,
+            theme: export_theme,
             embed_images_base64: full_document && self.export_embed_images,
             base_dir: doc.base_dir().map(Path::to_path_buf),
             sup_sub: self.settings.sup_sub,
@@ -1988,8 +2031,8 @@ impl MdApp {
             .show(ctx, |ui| {
                 ui.label(egui::RichText::new("页面配色").strong());
                 ui.horizontal(|ui| {
-                    ui.radio_value(&mut self.export_follow_theme, true, "跟随当前明/暗主题");
-                    ui.radio_value(&mut self.export_follow_theme, false, "固定为浅色主题");
+                    ui.radio_value(&mut self.export_follow_theme, true, "跟随当前主题");
+                    ui.radio_value(&mut self.export_follow_theme, false, "固定为浅色主题（01 无界疾风）");
                 });
                 ui.add_space(8.0);
                 ui.label(egui::RichText::new("图片资源").strong());

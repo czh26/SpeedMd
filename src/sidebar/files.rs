@@ -1,7 +1,8 @@
 //! 侧边栏文件树：懒加载目录、自然排序、新建/内联重命名/移入回收站。
 
+use crate::theme;
 use crate::winutil;
-use eframe::egui::{self, CursorIcon, Key, Sense};
+use eframe::egui::{self, pos2, vec2, CursorIcon, Key, Rect, Sense};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -273,7 +274,8 @@ impl FilesState {
                     self.render_rename_row(ui, depth, action);
                 } else {
                     let is_active = active_path.is_some_and(|ap| paths_eq(ap, &entry.path));
-                    let resp = ui.horizontal(|ui| {
+                    let sc = &theme::current(ui.ctx()).sidebar;
+                    let row_resp = ui.horizontal(|ui| {
                         ui.add_space(depth as f32 * 14.0 + 14.0);
                         let icon = if is_markdown_file(&entry.path) { "📝" } else { "📄" };
                         let r = ui.selectable_label(is_active, format!("{icon} {}", entry.name));
@@ -281,7 +283,17 @@ impl FilesState {
                             *action = Some(FilesAction::OpenFile(entry.path.clone()));
                         }
                         r
-                    }).inner;
+                    });
+                    if is_active {
+                        let row_r = row_resp.response.rect;
+                        let bar_x = ui.max_rect().left() - 10.0;
+                        ui.painter().rect_filled(
+                            Rect::from_min_size(pos2(bar_x, row_r.top() + 2.0), vec2(2.0, (row_r.height() - 4.0).max(8.0))),
+                            1.0,
+                            sc.active_bar,
+                        );
+                    }
+                    let resp = row_resp.inner;
 
                     resp.context_menu(|ui| {
                         if ui.button("打开").clicked() {

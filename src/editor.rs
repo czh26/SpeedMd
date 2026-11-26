@@ -531,7 +531,7 @@ pub fn show(ui: &mut egui::Ui, doc: &mut Document, cfg: &EditorConfig) -> Option
         }
     }
 
-    let dark = ui.visuals().dark_mode;
+    let theme_id = crate::theme::current_id(&ctx);
     let font_id = egui::FontId::new(cfg.font_size, FontFamily::Name("editor".into()));
     let uid = doc.uid;
     let version = doc.version;
@@ -553,7 +553,8 @@ pub fn show(ui: &mut egui::Ui, doc: &mut Document, cfg: &EditorConfig) -> Option
         });
 
         let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
-            let mut job = hl.highlight(version, buf.as_str(), dark, &font_id, overlay.as_ref().map(|o| FindOverlay { ..*o }));
+            let mut job =
+                hl.highlight(version, buf.as_str(), theme_id, &font_id, overlay.as_ref().map(|o| FindOverlay { ..*o }));
             job.wrap.max_width = wrap_width;
             ui.fonts_mut(|f| f.layout_job(job))
         };
@@ -570,15 +571,31 @@ pub fn show(ui: &mut egui::Ui, doc: &mut Document, cfg: &EditorConfig) -> Option
                 };
                 let min_sz = if pad > 0.0 { vec2(target_w, avail_size.y) } else { avail_size };
                 let mut render_edit = |ui: &mut egui::Ui| {
-                    TextEdit::multiline(text)
+                    let cur_line_slot = ui.painter().add(egui::Shape::Noop);
+                    let out = TextEdit::multiline(text)
                         .id(id)
                         .desired_width(target_w)
                         .min_size(min_sz)
-                        .frame(egui::Frame::NONE)
+                        .frame(egui::Frame::NONE.inner_margin(egui::Margin { left: 18, right: 16, top: 14, bottom: 32 }))
                         .lock_focus(true)
-                        .margin(egui::Margin::symmetric(12, 8))
                         .layouter(&mut layouter)
-                        .show(ui)
+                        .show(ui);
+                    if out.response.response.has_focus()
+                        && let Some(cr) = out.cursor_range
+                        && cr.primary == cr.secondary
+                    {
+                        let spec = crate::theme::current(&ctx);
+                        let c_rect = out.galley.pos_from_cursor(cr.primary).translate(out.galley_pos.to_vec2());
+                        let band = egui::Rect::from_min_max(
+                            egui::pos2(out.response.response.rect.left(), c_rect.top()),
+                            egui::pos2(out.response.response.rect.right(), c_rect.bottom()),
+                        );
+                        ui.painter().set(
+                            cur_line_slot,
+                            egui::Shape::rect_filled(band, 0.0, spec.editor.current_line_bg),
+                        );
+                    }
+                    out
                 };
                 let output = if pad > 0.0 {
                     ui.horizontal(|ui| {

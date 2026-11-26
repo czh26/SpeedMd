@@ -2,8 +2,10 @@
 
 use crate::html_inline::detect_media_kind;
 use crate::markdown;
-use crate::preview::{alert_style, is_supported_highlight_lang, resolve_path};
+use crate::preview::{alert_meta, is_supported_highlight_lang, resolve_path};
 use crate::textproc::{self, Segment};
+use crate::theme::ThemeId;
+use eframe::egui::Color32;
 use pulldown_cmark::{BlockQuoteKind, CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -11,7 +13,7 @@ use std::path::{Path, PathBuf};
 #[derive(Clone)]
 pub struct ExportOptions {
     pub full_document: bool,
-    pub dark_theme: bool,
+    pub theme: ThemeId,
     pub embed_images_base64: bool,
     pub base_dir: Option<PathBuf>,
     pub sup_sub: bool,
@@ -23,7 +25,7 @@ pub fn to_html_fragment(md: &str, base_dir: Option<&Path>, sup_sub: bool) -> Str
         md,
         &ExportOptions {
             full_document: false,
-            dark_theme: false,
+            theme: ThemeId::ZenHorizon,
             embed_images_base64: false,
             base_dir: base_dir.map(Path::to_path_buf),
             sup_sub,
@@ -53,11 +55,7 @@ pub fn export_markdown(md: &str, opts: &ExportOptions) -> String {
 
     let hl_ctx = eframe::egui::Context::default();
     let hl_style = eframe::egui::Style::default();
-    let code_theme = if opts.dark_theme {
-        egui_extras::syntax_highlighting::CodeTheme::dark(14.0)
-    } else {
-        egui_extras::syntax_highlighting::CodeTheme::light(14.0)
-    };
+    let code_theme = opts.theme.spec().code.to_code_theme(14.0);
 
     let mut out_events: Vec<Event<'static>> = Vec::new();
     let mut heading_idx = 0usize;
@@ -162,7 +160,7 @@ pub fn export_markdown(md: &str, opts: &ExportOptions) -> String {
             Event::Start(Tag::BlockQuote(kind)) => {
                 if let Some(k) = kind {
                     quote_is_alert.push(true);
-                    let (_, icon, label) = alert_style(k);
+                    let (icon, label) = alert_meta(k);
                     let cls = alert_class(k);
                     let h = format!(
                         "<div class=\"alert alert-{cls}\">\n<p class=\"alert-title\">{icon} {}</p>\n",
@@ -298,7 +296,7 @@ pub fn export_markdown(md: &str, opts: &ExportOptions) -> String {
         return body;
     }
 
-    wrap_full_document(&doc_title, &body, opts.dark_theme)
+    wrap_full_document(&doc_title, &body, opts.theme)
 }
 
 #[derive(Clone)]
@@ -652,12 +650,28 @@ pub fn html_escape(s: &str) -> String {
     out
 }
 
-fn wrap_full_document(title: &str, body: &str, dark: bool) -> String {
-    let (bg, fg, heading, muted, border, panel, code_bg, link, mark_bg) = if dark {
-        ("#181a1f", "#d8dbdf", "#f0f2f4", "#8b949e", "#38404a", "#22262c", "#262b33", "#58a6ff", "#8a7210")
-    } else {
-        ("#ffffff", "#24292f", "#111418", "#656d76", "#d0d7de", "#f6f8fa", "#f2f4f7", "#0969da", "#ffec80")
-    };
+fn css_hex(c: Color32) -> String {
+    format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
+}
+
+fn wrap_full_document(title: &str, body: &str, theme: ThemeId) -> String {
+    let css = &theme.spec().export_css;
+    let bg = css_hex(css.bg);
+    let fg = css_hex(css.fg);
+    let heading = css_hex(css.heading);
+    let muted = css_hex(css.muted);
+    let border = css_hex(css.border);
+    let panel = css_hex(css.panel);
+    let code_bg = css_hex(css.code_bg);
+    let link = css_hex(css.link);
+    let mark_bg = css_hex(css.mark_bg);
+    let mark_fg = css_hex(css.mark_fg);
+    let callout_bg = css_hex(css.callout_bg);
+    let alert_note = css_hex(css.alerts.note);
+    let alert_tip = css_hex(css.alerts.tip);
+    let alert_important = css_hex(css.alerts.important);
+    let alert_warning = css_hex(css.alerts.warning);
+    let alert_caution = css_hex(css.alerts.caution);
     format!(
         r#"<!DOCTYPE html>
 <html lang="zh-CN">
@@ -675,10 +689,10 @@ fn wrap_full_document(title: &str, body: &str, dark: bool) -> String {
   a:hover {{ text-decoration: underline; }}
   p, ul, ol, blockquote, pre, table, details {{ margin: 0 0 1em; }}
   code {{ background: {code_bg}; padding: 0.15em 0.4em; border-radius: 4px; font-family: Consolas, "Cascadia Mono", monospace; font-size: 0.9em; }}
-  pre {{ background: {panel}; border: 1px solid {border}; border-radius: 6px; padding: 14px 16px; overflow-x: auto; }}
+  pre {{ background: {code_bg}; border: 1px solid {border}; border-radius: 8px; padding: 14px 16px; overflow-x: auto; }}
   pre code {{ background: transparent; padding: 0; font-size: 0.9em; }}
   blockquote {{ border-left: 4px solid {border}; margin-left: 0; padding: 4px 16px; color: {muted}; }}
-  mark {{ background: {mark_bg}; color: inherit; padding: 0 3px; border-radius: 3px; }}
+  mark {{ background: {mark_bg}; color: {mark_fg}; padding: 0 3px; border-radius: 3px; }}
   kbd {{ background: {panel}; border: 1px solid {border}; border-radius: 4px; padding: 1px 6px; font-family: Consolas, monospace; font-size: 0.88em; }}
   table {{ border-collapse: collapse; width: 100%; }}
   th, td {{ border: 1px solid {border}; padding: 8px 12px; }}
@@ -688,12 +702,13 @@ fn wrap_full_document(title: &str, body: &str, dark: bool) -> String {
   details summary {{ cursor: pointer; font-weight: 600; color: {heading}; }}
   nav.toc {{ background: {panel}; border: 1px solid {border}; border-radius: 6px; padding: 12px 18px; margin-bottom: 1.2em; }}
   nav.toc ul {{ list-style: none; padding: 0; margin: 0; }}
-  .alert {{ border-left: 4px solid {link}; background: {panel}; padding: 10px 16px; border-radius: 0 6px 6px 0; margin-bottom: 1em; }}
+  .alert {{ border-left: 4px solid {alert_note}; background: {callout_bg}; padding: 10px 16px; border-radius: 0 8px 8px 0; margin-bottom: 1em; }}
   .alert-title {{ font-weight: 600; margin-bottom: 4px; }}
-  .alert-tip {{ border-left-color: #3fb950; }}
-  .alert-important {{ border-left-color: #a371f7; }}
-  .alert-warning {{ border-left-color: #d29922; }}
-  .alert-caution {{ border-left-color: #f85149; }}
+  .alert-note {{ border-left-color: {alert_note}; }}
+  .alert-tip {{ border-left-color: {alert_tip}; }}
+  .alert-important {{ border-left-color: {alert_important}; }}
+  .alert-warning {{ border-left-color: {alert_warning}; }}
+  .alert-caution {{ border-left-color: {alert_caution}; }}
 </style>
 </head>
 <body>
@@ -704,7 +719,7 @@ fn wrap_full_document(title: &str, body: &str, dark: bool) -> String {
 </html>
 "#,
         html_escape(title),
-        if dark { "dark" } else { "light" },
+        css.color_scheme,
     )
 }
 
@@ -729,7 +744,7 @@ mod tests {
             md,
             &ExportOptions {
                 full_document: true,
-                dark_theme: false,
+                theme: ThemeId::ZenHorizon,
                 embed_images_base64: false,
                 base_dir: None,
                 sup_sub: true,

@@ -274,7 +274,7 @@ fn paint_active_tab(painter: &egui::Painter, r: Rect, top_bar_bottom: f32, spec:
                 r.bottom() - 1.2,
                 Stroke::new(2.0, tc.secondary_accent),
             );
-            let spark = Rect::from_center_size(pos2(r.center().x, r.bottom() - 0.5), vec2(9.0, 10.0));
+            let spark = Rect::from_center_size(pos2(r.center().x, r.bottom() - 1.5), vec2(8.0, 9.0));
             theme::paint_bolt(painter, spark, tc.secondary_accent);
         }
         ActiveTabStyle::ConnectedPageTopBar => {

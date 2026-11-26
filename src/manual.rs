@@ -4,8 +4,9 @@ use crate::editor::{self, TextPatch};
 use crate::highlight;
 use crate::markdown::{self, bold_family, Doc, ParseOptions, Theme};
 use crate::preview::{self, PreviewOptions};
+use crate::theme::{self, ThemeId};
 use eframe::egui::{
-    self, pos2, vec2, Align, Color32, CursorIcon, FontFamily, FontId, Margin, Rect, RichText, Sense, Shape, Stroke,
+    self, pos2, vec2, Align, CursorIcon, FontFamily, FontId, Margin, Rect, RichText, Sense, Shape, Stroke,
     StrokeKind, UiBuilder,
 };
 use image::{codecs::png::PngEncoder, ImageEncoder, Rgba, RgbaImage};
@@ -709,7 +710,9 @@ impl ManualState {
         self.ensure_loaded();
         ensure_demo_images(ui.ctx());
         let data = self.data.clone()?;
-        let dark = ui.visuals().dark_mode;
+        let spec = theme::current(ui.ctx());
+        let theme_id = spec.id;
+        let mp = &spec.manual;
         let mut action: Option<ManualAction> = None;
 
         // 清空过期复制提示
@@ -731,8 +734,8 @@ impl ManualState {
             ui.ctx().request_repaint();
         }
 
-        let bar_bg = if dark { Color32::from_rgb(0x20, 0x24, 0x2a) } else { Color32::from_rgb(0xf6, 0xf8, 0xfa) };
-        let border_col = ui.visuals().widgets.noninteractive.bg_stroke.color;
+        let bar_bg = mp.bar_bg;
+        let border_col = mp.border;
         egui::Frame::new()
             .fill(bar_bg)
             .inner_margin(Margin::symmetric(18, 10))
@@ -780,9 +783,10 @@ impl ManualState {
             // 2. 左侧分类目录
             ui.allocate_ui_with_layout(vec2(left_w, avail.height()), egui::Layout::top_down(Align::Min), |ui| {
                 egui::Frame::new()
-                    .fill(if dark { Color32::from_rgb(0x1b, 0x1e, 0x24) } else { Color32::from_rgb(0xf9, 0xfa, 0xfb) })
+                    .fill(mp.toc_bg)
                     .inner_margin(Margin::symmetric(10, 12))
                     .show(ui, |ui| {
+                        *ui.visuals_mut() = theme::sidebar_visuals(ui.ctx()).clone();
                         ui.set_min_height((avail.height() - 24.0).max(0.0));
                         egui::ScrollArea::vertical().id_salt("manual_toc_scroll").auto_shrink(false).show(ui, |ui| {
                             ui.label(RichText::new("语法分类").size(12.5).color(ui.visuals().weak_text_color()));
@@ -801,50 +805,41 @@ impl ManualState {
                                     ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
                                 }
                                 if active {
-                                    ui.painter().rect_filled(
-                                        rect,
-                                        4.0,
-                                        if dark { Color32::from_rgb(0x28, 0x35, 0x48) } else { Color32::from_rgb(0xe8, 0xf2, 0xff) },
-                                    );
+                                    ui.painter().rect_filled(rect, 4.0, mp.toc_active_bg);
                                     ui.painter().rect_stroke(
                                         rect,
                                         4.0,
-                                        Stroke::new(
-                                            1.0,
-                                            if dark { Color32::from_rgb(0x38, 0x8b, 0xfd) } else { Color32::from_rgb(0x9b, 0xc3, 0xf5) },
-                                        ),
+                                        Stroke::new(1.0, mp.toc_active_stroke),
                                         StrokeKind::Inside,
                                     );
-                                } else if btn.hovered() {
                                     ui.painter().rect_filled(
-                                        rect,
-                                        4.0,
-                                        if dark { Color32::from_rgb(0x26, 0x2b, 0x33) } else { Color32::from_rgb(0xed, 0xf1, 0xf5) },
+                                        Rect::from_min_size(pos2(rect.left(), rect.top() + 3.0), vec2(2.0, 20.0)),
+                                        1.0,
+                                        mp.accent,
                                     );
+                                } else if btn.hovered() {
+                                    ui.painter().rect_filled(rect, 4.0, mp.toc_hover_bg);
                                 }
                                 let text_col = if active {
-                                    if dark { Color32::WHITE } else { Color32::from_rgb(0x09, 0x69, 0xda) }
+                                    mp.toc_active_fg
                                 } else {
                                     ui.visuals().text_color()
                                 };
                                 let font = if active { FontId::new(13.5, bold_family()) } else { FontId::proportional(13.5) };
                                 ui.painter().text(
-                                    eframe::egui::pos2(rect.left() + 8.0, rect.center().y),
-                                    eframe::egui::Align2::LEFT_CENTER,
+                                    pos2(rect.left() + 8.0, rect.center().y),
+                                    egui::Align2::LEFT_CENTER,
                                     &cat.name,
                                     font,
                                     text_col,
                                 );
                                 ui.painter().text(
-                                    eframe::egui::pos2(rect.right() - 8.0, rect.center().y),
-                                    eframe::egui::Align2::RIGHT_CENTER,
+                                    pos2(rect.right() - 8.0, rect.center().y),
+                                    egui::Align2::RIGHT_CENTER,
                                     format!("{count}"),
                                     FontId::proportional(12.0),
                                     ui.visuals().weak_text_color(),
                                 );
-                                if btn.hovered() {
-                                    ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-                                }
                                 if btn.clicked() {
                                     self.pending_scroll_cat = Some(cat_idx);
                                     self.active_category = cat_idx;
@@ -874,7 +869,7 @@ impl ManualState {
                     return;
                 }
 
-                let layout_key = hash_layout_key(&self.query, dark, cfg);
+                let layout_key = hash_layout_key(&self.query, theme_id, cfg);
                 let had_pending_cat = self.pending_scroll_cat.is_some();
                 let had_pending_entry = self.pending_scroll_entry.is_some();
                 let force = had_pending_cat || had_pending_entry || self.preview_scroll_to.is_some();
@@ -958,7 +953,7 @@ impl ManualState {
 
                                                 let start_y = ui.cursor().top();
                                                 let (card_act, card_rect) =
-                                                    self.render_card(ui, &data.entries[entry_idx], entry_idx, dark, cfg);
+                                                    self.render_card(ui, &data.entries[entry_idx], entry_idx, theme_id, cfg);
                                                 if let Some(act) = card_act {
                                                     action = Some(act);
                                                 }
@@ -996,21 +991,23 @@ impl ManualState {
         ui: &mut egui::Ui,
         entry: &ManualEntry,
         idx: usize,
-        dark: bool,
+        theme_id: ThemeId,
         cfg: &ManualViewCfg<'_>,
     ) -> (Option<ManualAction>, egui::Rect) {
         let mut action: Option<ManualAction> = None;
-        let card_bg = if dark { Color32::from_rgb(0x21, 0x25, 0x2b) } else { Color32::WHITE };
-        let src_bg = if dark { Color32::from_rgb(0x19, 0x1c, 0x21) } else { Color32::from_rgb(0xf6, 0xf8, 0xfa) };
-        let prev_bg = if dark { Color32::from_rgb(0x1d, 0x20, 0x26) } else { Color32::from_rgb(0xfc, 0xfd, 0xfe) };
-        let border = if dark { Color32::from_rgb(0x3a, 0x41, 0x4c) } else { Color32::from_rgb(0xd8, 0xde, 0xe4) };
-        let accent = if dark { Color32::from_rgb(0x58, 0xa6, 0xff) } else { Color32::from_rgb(0x09, 0x69, 0xda) };
+        let spec = theme_id.spec();
+        let mp = &spec.manual;
+        let card_bg = mp.card_bg;
+        let src_bg = mp.src_bg;
+        let prev_bg = mp.prev_bg;
+        let border = mp.border;
+        let accent = mp.accent;
 
         // 按需更新该卡片源码高亮与效果预览缓存
         let src_font = FontId::new(cfg.editor_font_size.clamp(12.0, 22.0), FontFamily::Name("editor".into()));
-        let src_key = hash_pair(&(dark, cfg.editor_font_size.to_bits(), cfg.editor_font_family));
+        let src_key = hash_pair(&(theme_id, cfg.editor_font_size.to_bits(), cfg.editor_font_family));
         let prev_key = hash_pair(&(
-            dark,
+            theme_id,
             cfg.preview_font_size.to_bits(),
             cfg.line_height.to_bits(),
             cfg.para_spacing.to_bits(),
@@ -1020,11 +1017,11 @@ impl ManualState {
 
         let cache = &mut self.caches[idx];
         if cache.source_job.is_none() || cache.source_key != src_key {
-            cache.source_job = Some(Arc::new(highlight::highlight_manual_source(&entry.code, dark, &src_font)));
+            cache.source_job = Some(Arc::new(highlight::highlight_manual_source(&entry.code, theme_id, &src_font)));
             cache.source_key = src_key;
         }
         if cache.preview_doc.is_none() || cache.preview_key != prev_key {
-            let th = Theme::with_spacing(dark, cfg.preview_font_size, cfg.line_height, cfg.para_spacing);
+            let th = Theme::from_theme(theme_id, cfg.preview_font_size, cfg.line_height, cfg.para_spacing);
             let parsed = markdown::parse(
                 &entry.code,
                 &th,
@@ -1056,7 +1053,7 @@ impl ManualState {
                                     .color(ui.visuals().strong_text_color()),
                             );
                             for tag in &entry.tags {
-                                draw_tag_pill(ui, tag, dark);
+                                draw_tag_pill(ui, tag, mp);
                             }
                         });
                     });
@@ -1077,7 +1074,7 @@ impl ManualState {
                             .is_some_and(|(ci, at)| ci == idx && at.elapsed() < Duration::from_millis(1500));
                         let copy_label = if copied { "✓ 已复制" } else { "复制" };
                         let copy_btn = if copied {
-                            egui::Button::new(RichText::new(copy_label).color(Color32::from_rgb(0x2d, 0xa4, 0x4e)))
+                            egui::Button::new(RichText::new(copy_label).color(spec.semantic.success))
                         } else {
                             egui::Button::new(copy_label)
                         };
@@ -1109,10 +1106,10 @@ impl ManualState {
                         SettingDep::FrontMatter => cfg.front_matter,
                     };
                     let (bg, col, msg) = if enabled {
-                        let c = Color32::from_rgb(0x2d, 0xa4, 0x4e);
+                        let c = spec.semantic.success;
                         (c.gamma_multiply(0.10), c, format!("✓ 已开启「{}」", dep.label()))
                     } else {
-                        let c = Color32::from_rgb(0xd2, 0x99, 0x22);
+                        let c = spec.semantic.warn;
                         (
                             c.gamma_multiply(0.12),
                             c,
@@ -1257,13 +1254,13 @@ impl ManualState {
     }
 }
 
-fn draw_tag_pill(ui: &mut egui::Ui, tag: &str, dark: bool) {
+fn draw_tag_pill(ui: &mut egui::Ui, tag: &str, mp: &theme::ManualPalette) {
     let col = if tag.contains("设置") {
-        Color32::from_rgb(0xd2, 0x99, 0x22)
+        mp.tag_setting
     } else if tag.contains("扩展") {
-        if dark { Color32::from_rgb(0xb8, 0x86, 0xff) } else { Color32::from_rgb(0x82, 0x50, 0xdf) }
+        mp.tag_ext
     } else if tag.contains("HTML") {
-        if dark { Color32::from_rgb(0x4b, 0xc2, 0xd6) } else { Color32::from_rgb(0x0b, 0x7a, 0x99) }
+        mp.tag_html
     } else {
         ui.visuals().weak_text_color()
     };
@@ -1287,10 +1284,10 @@ fn hash_pair<T: Hash>(val: &T) -> u64 {
     h.finish()
 }
 
-fn hash_layout_key(query: &str, dark: bool, cfg: &ManualViewCfg<'_>) -> u64 {
+fn hash_layout_key(query: &str, theme_id: ThemeId, cfg: &ManualViewCfg<'_>) -> u64 {
     hash_pair(&(
         query,
-        dark,
+        theme_id,
         cfg.editor_font_size.to_bits(),
         cfg.editor_font_family,
         cfg.preview_font_size.to_bits(),
@@ -1325,9 +1322,9 @@ mod tests {
     fn all_manual_examples_parse_and_highlight_without_panic() {
         let data = ManualData::parse(RAW_MANUAL).unwrap();
         let font = FontId::monospace(14.0);
-        for dark in [false, true] {
+        for theme_id in ThemeId::ALL {
             for sup_sub in [false, true] {
-                let th = Theme::new(dark, 16.0);
+                let th = Theme::from_theme(theme_id, 16.0, 1.6, 0.75);
                 let opts = ParseOptions { sup_sub, front_matter: true };
                 for entry in &data.entries {
                     let doc = markdown::parse(&entry.code, &th, &opts);
@@ -1339,7 +1336,7 @@ mod tests {
                             sup_sub
                         );
                     }
-                    let job = highlight::highlight_manual_source(&entry.code, dark, &font);
+                    let job = highlight::highlight_manual_source(&entry.code, theme_id, &font);
                     let mut cursor = 0usize;
                     for sec in &job.sections {
                         assert_eq!(sec.byte_range.start.0, cursor);
