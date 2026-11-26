@@ -78,5 +78,28 @@ fn main() {
 }
 ```
 
+## 内嵌 HTML 与多媒体
+
+支持行内样式：<span style="color: #e05d44; font-weight: bold;">红色加粗文字</span>、<font color="#2da44e" size="5">放大绿色字</font>，以及 <kbd>Ctrl+F</kbd> 按键样式。
+
+<div align="center">
+
+居中的容器段落：支持多块元素居中排版 ✨
+
+</div>
+
+<details open>
+<summary>可折叠详情块（点击标题收起/展开）</summary>
+
+这里可以包含任意 Markdown **富文本**、`行内代码` 与列表：
+- 第一条：原生 DOM 解析 HTML
+- 第二条：支持多层级嵌套块
+
+</details>
+
+<video src="assets/demo.mp4" title="示例演示视频" controls></video>
+
+<audio src="assets/bgm.wav" title="示例背景音频"></audio>
+
 [^1]: 2004 年发布，最初的目标是“易读易写”。
 [^gfm]: GitHub Flavored Markdown，增加了表格、任务列表、删除线、自动链接等。

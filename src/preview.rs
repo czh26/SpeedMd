@@ -4,6 +4,7 @@
 //! - 链接 / 脚注 / 目录可点击，任务列表复选框可直接勾选（会回写源码）
 
 use crate::markdown::{self, bold_family, Block, Chunk, Doc, Inline, Rich, Target, Theme};
+use crate::media;
 use eframe::egui::{
     self, pos2, text::CCursor, vec2, Align, Align2, Color32, CursorIcon, FontId, Galley, Rect, RichText, Sense, Stroke,
     StrokeKind, UiBuilder,
@@ -40,12 +41,14 @@ pub struct PreviewState {
 struct Rcx<'a> {
     th: &'a Theme,
     doc: &'a Doc,
+    doc_uid: u64,
     scroll_to: &'a mut Option<String>,
     nav: &'a mut Option<String>,
     actions: &'a mut Actions,
     base_dir: Option<&'a Path>,
     list_depth: usize,
     code_line_numbers: bool,
+    align: Option<Align>,
 }
 
 impl Rcx<'_> {
@@ -157,12 +160,14 @@ impl PreviewState {
                                 let mut rcx = Rcx {
                                     th,
                                     doc,
+                                    doc_uid: uid,
                                     scroll_to,
                                     nav: &mut nav,
                                     actions: &mut actions,
                                     base_dir: opts.base_dir,
                                     list_depth: 0,
                                     code_line_numbers: opts.code_line_numbers,
+                                    align: None,
                                 };
                                 for (i, block) in doc.blocks.iter().enumerate() {
                                     let y = ui.cursor().top() - origin;
@@ -293,10 +298,71 @@ fn render_block(ui: &mut egui::Ui, block: &Block, rcx: &mut Rcx, first: bool) {
                 });
         }
         Block::Toc => render_toc(ui, rcx),
-        Block::Html(html) => {
-            ui.add(egui::Label::new(RichText::new(html).monospace().size(size * 0.85).color(th.weak)).selectable(true));
+        Block::Details { id, summary, default_open, blocks } => {
+            render_details(ui, *id, summary, *default_open, blocks, rcx);
+        }
+        Block::Aligned { align, blocks } => {
+            let prev = rcx.align;
+            rcx.align = Some(*align);
+            ui.with_layout(egui::Layout::top_down(*align), |ui| {
+                ui.set_width(ui.available_width());
+                render_blocks(ui, blocks, rcx);
+            });
+            rcx.align = prev;
+        }
+        Block::Media(card) => {
+            media::render_card(ui, card, th, rcx.base_dir);
         }
     }
+}
+
+fn render_details(
+    ui: &mut egui::Ui,
+    id: usize,
+    summary: &str,
+    default_open: bool,
+    blocks: &[Block],
+    rcx: &mut Rcx,
+) {
+    let th = rcx.th;
+    let size = th.size;
+    let state_id = egui::Id::unique(("details", rcx.doc_uid, id, default_open));
+    let mut state =
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), state_id, default_open);
+    let summary_text = if summary.trim().is_empty() { "详细信息" } else { summary.trim() };
+
+    egui::Frame::new()
+        .fill(th.panel_bg.gamma_multiply(0.55))
+        .stroke(Stroke::new(1.0, th.border))
+        .corner_radius(6)
+        .inner_margin(egui::Margin::symmetric(12, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let arrow = if state.is_open() { "▾" } else { "▸" };
+            let hdr_resp = ui
+                .horizontal(|ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(arrow).size(size * 0.95).color(th.weak));
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(summary_text).font(FontId::new(size, bold_family())).color(th.heading));
+                })
+                .response
+                .interact(Sense::click());
+            if hdr_resp.hovered() {
+                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            }
+            if hdr_resp.clicked() {
+                state.toggle(ui);
+                state.store(ui.ctx());
+            }
+            if state.is_open() && !blocks.is_empty() {
+                ui.add_space(size * 0.45);
+                let full = ui.available_rect_before_wrap();
+                ui.painter().hline(full.x_range(), full.top(), Stroke::new(1.0, th.border.gamma_multiply(0.6)));
+                ui.add_space(size * 0.45);
+                render_blocks(ui, blocks, rcx);
+            }
+        });
 }
 
 fn alert_style(k: BlockQuoteKind) -> (Color32, &'static str, &'static str) {
@@ -485,9 +551,12 @@ fn render_list(ui: &mut egui::Ui, start: Option<u64>, items: &[markdown::Item], 
     rcx.list_depth -= 1;
 }
 
-fn layout_rich(ui: &egui::Ui, rich: &Rich, width: f32) -> Arc<Galley> {
+fn layout_rich(ui: &egui::Ui, rich: &Rich, width: f32, halign: Option<Align>) -> Arc<Galley> {
     let mut job = (*rich.job).clone();
     job.wrap.max_width = width;
+    if let Some(a) = halign {
+        job.halign = a;
+    }
     ui.fonts_mut(|f| f.layout_job(job))
 }
 
@@ -523,7 +592,7 @@ fn show_galley(ui: &mut egui::Ui, galley: Arc<Galley>, rich: &Rich, rcx: &mut Rc
 }
 
 fn render_rich(ui: &mut egui::Ui, rich: &Rich, rcx: &mut Rcx) -> Rect {
-    let galley = layout_rich(ui, rich, ui.available_width());
+    let galley = layout_rich(ui, rich, ui.available_width(), rcx.align);
     let top = ui.cursor().top();
     show_galley(ui, galley, rich, rcx);
     let bottom = ui.cursor().top();
@@ -531,13 +600,34 @@ fn render_rich(ui: &mut egui::Ui, rich: &Rich, rcx: &mut Rcx) -> Rect {
     Rect::from_x_y_ranges(full.x_range(), top..=bottom.max(top + 1.0))
 }
 
-fn render_image(ui: &mut egui::Ui, url: &str, alt: &str, rcx: &mut Rcx) -> Rect {
+fn render_image(
+    ui: &mut egui::Ui,
+    url: &str,
+    alt: &str,
+    width: Option<f32>,
+    height: Option<f32>,
+    rcx: &mut Rcx,
+) -> Rect {
     let uri = if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("file://") {
         url.to_string()
     } else {
         file_uri(&resolve_path(&markdown::percent_decode(url), rcx.base_dir))
     };
-    let resp = ui.add(egui::Image::new(uri).max_width(ui.available_width()).corner_radius(4));
+    let avail = ui.available_width();
+    let mut img = egui::Image::new(uri).corner_radius(4);
+    img = match (width, height) {
+        (Some(w), Some(h)) if w > 0.0 && h > 0.0 => {
+            let scale = (avail / w).min(1.0);
+            img.fit_to_exact_size(vec2(w * scale, h * scale)).maintain_aspect_ratio(false)
+        }
+        (Some(w), None) if w > 0.0 => {
+            let w = w.min(avail);
+            img.max_width(w).fit_to_exact_size(vec2(w, 10_000.0))
+        }
+        (None, Some(h)) if h > 0.0 => img.max_width(avail).fit_to_exact_size(vec2(avail, h)),
+        _ => img.max_width(avail),
+    };
+    let resp = ui.add(img);
     let r = resp.rect;
     if !alt.is_empty() {
         resp.on_hover_text(alt);
@@ -553,7 +643,13 @@ fn render_inline(ui: &mut egui::Ui, inl: &Inline, rcx: &mut Rcx) -> Rect {
         }
         let r = match chunk {
             Chunk::Text(rich) => render_rich(ui, rich, rcx),
-            Chunk::Image { url, alt } => render_image(ui, url, alt, rcx),
+            Chunk::Image { url, alt, width, height } => render_image(ui, url, alt, *width, *height, rcx),
+            Chunk::Media(card) => {
+                let top = ui.cursor().top();
+                media::render_card(ui, card, rcx.th, rcx.base_dir);
+                let bottom = ui.cursor().top();
+                Rect::from_x_y_ranges(ui.max_rect().x_range(), top..=bottom.max(top + 1.0))
+            }
         };
         rect = rect.union(r);
     }
@@ -582,7 +678,7 @@ fn render_table(ui: &mut egui::Ui, aligns: &[Alignment], head: &[Inline], rows: 
                 .map(|c| {
                     row.get(c).and_then(|cell| {
                         cell.chunks.iter().find_map(|ch| match ch {
-                            Chunk::Text(r) => Some((layout_rich(ui, r, max_cell), r)),
+                            Chunk::Text(r) => Some((layout_rich(ui, r, max_cell, None), r)),
                             _ => None,
                         })
                     })
