@@ -24,6 +24,7 @@ mod sidebar;
 mod stats;
 mod tabs;
 mod textproc;
+mod theme;
 mod winutil;
 
 use app::{APP_NAME, MdApp};
