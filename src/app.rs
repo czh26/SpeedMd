@@ -24,7 +24,6 @@ use std::sync::mpsc;
 use std::time::Instant;
 
 pub const APP_NAME: &str = "MdPad";
-const WELCOME: &str = include_str!("welcome.md");
 
 #[derive(Clone)]
 enum ConfirmAction {
@@ -213,7 +212,7 @@ impl MdApp {
         }
 
         if app.docs.is_empty() {
-            app.docs.push(Document::from_welcome(WELCOME));
+            app.docs.push(Document::new_empty());
             app.active = 0;
         }
         if !app.doc().is_manual {
@@ -389,7 +388,6 @@ impl MdApp {
                 self.docs[idx].path = Some(path);
                 self.docs[idx].title_hint = None;
                 self.docs[idx].dirty = false;
-                self.docs[idx].is_welcome = false;
                 true
             }
             Err(e) => {

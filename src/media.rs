@@ -257,20 +257,21 @@ pub fn render_card_opts(
             ui.horizontal(|ui| {
                 ui.label(RichText::new(icon).size(th.size * 1.4));
                 ui.add_space(6.0);
-                ui.vertical(|ui| {
-                    ui.horizontal(|ui| {
+                let info_w = (ui.available_width() - 68.0).max(80.0);
+                ui.allocate_ui_with_layout(egui::vec2(info_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label(
                             RichText::new(&display_title)
                                 .font(FontId::new(th.size, bold_family()))
                                 .color(th.heading),
                         );
-                        ui.add_space(6.0);
+                        ui.add_space(4.0);
                         ui.label(RichText::new(format!("[{kind_label}]")).size(th.size * 0.8).color(th.accent));
                         if let Some(secs) = duration {
                             ui.label(RichText::new(format!("  ⏱ {}", format_duration(secs))).size(th.size * 0.85).color(th.weak));
                         }
                     });
-                    ui.label(RichText::new(&card.url).size(th.size * 0.8).color(th.weak));
+                    ui.add(egui::Label::new(RichText::new(&card.url).size(th.size * 0.8).color(th.weak)).truncate());
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let action_text = if can_open { "▶ 打开" } else { "演示卡片" };

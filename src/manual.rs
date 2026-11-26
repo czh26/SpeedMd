@@ -5,7 +5,8 @@ use crate::highlight;
 use crate::markdown::{self, bold_family, Doc, ParseOptions, Theme};
 use crate::preview::{self, PreviewOptions};
 use eframe::egui::{
-    self, vec2, Align, Color32, CursorIcon, FontFamily, FontId, Margin, RichText, Sense, Stroke, StrokeKind,
+    self, pos2, vec2, Align, Color32, CursorIcon, FontFamily, FontId, Margin, Rect, RichText, Sense, Shape, Stroke,
+    StrokeKind, UiBuilder,
 };
 use image::{codecs::png::PngEncoder, ImageEncoder, Rgba, RgbaImage};
 use std::collections::HashSet;
@@ -889,7 +890,7 @@ impl ManualState {
                             .show(ui, |ui| {
                                 let avail_w = ui.available_width();
                                 let content_w = if cfg.max_content_width > 0.0 {
-                                    avail_w.min(cfg.max_content_width + 60.0)
+                                    avail_w.min(cfg.max_content_width * 2.0 + 60.0)
                                 } else {
                                     avail_w
                                 };
@@ -1133,66 +1134,122 @@ impl ManualState {
                         });
                 }
 
-                ui.add_space(8.0);
+                ui.add_space(10.0);
 
-                // 4. 源码框（编辑器同款高亮 + 横向滚动 + 淡色行尾空格标志）
-                egui::Frame::new()
-                    .fill(src_bg)
-                    .stroke(Stroke::new(1.0, border))
-                    .corner_radius(5)
-                    .inner_margin(Margin::symmetric(12, 8))
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new("源码").size(11.5).color(ui.visuals().weak_text_color()));
-                        });
-                        ui.add_space(3.0);
-                        let mut job = (*src_job).clone();
-                        job.wrap.max_width = f32::INFINITY;
-                        egui::ScrollArea::horizontal()
-                            .id_salt(("manual_src_scroll", idx))
-                            .show(ui, |ui| {
-                                ui.add(egui::Label::new(job).selectable(true));
-                            });
+                // 4 & 5. 源码（左）与效果预览（右）等高左右对比排版
+                let total_w = ui.available_width();
+                let col_gap = 12.0;
+                let col_w = ((total_w - col_gap) * 0.5).max(120.0);
+                let pad_x = 12.0;
+                let pad_y = 9.0;
+                let inner_col_w = (col_w - pad_x * 2.0).max(60.0);
+                let row_top = ui.cursor().top();
+                let left_x = ui.cursor().left();
+                let right_x = left_x + col_w + col_gap;
+                let base_clip = ui.clip_rect();
+                let header_sep = border.gamma_multiply(0.55);
+
+                let left_fill_idx = ui.painter().add(Shape::Noop);
+                let left_stroke_idx = ui.painter().add(Shape::Noop);
+                let right_fill_idx = ui.painter().add(Shape::Noop);
+                let right_stroke_idx = ui.painter().add(Shape::Noop);
+
+                // 左栏：源码（编辑器同款高亮 + 横向滚动 + 淡色行尾空格标志）
+                let mut left_ui = ui.new_child(
+                    UiBuilder::new()
+                        .max_rect(Rect::from_min_size(pos2(left_x + pad_x, row_top + pad_y), vec2(inner_col_w, 100_000.0)))
+                        .layout(egui::Layout::top_down(Align::Min)),
+                );
+                left_ui.set_clip_rect(
+                    base_clip.intersect(Rect::from_x_y_ranges(
+                        (left_x + 1.0)..=(left_x + col_w - 1.0),
+                        -f32::INFINITY..=f32::INFINITY,
+                    )),
+                );
+                left_ui.spacing_mut().item_spacing.y = 0.0;
+                left_ui.set_width(inner_col_w);
+                left_ui.label(RichText::new("源码").size(11.5).color(left_ui.visuals().weak_text_color()));
+                left_ui.add_space(5.0);
+                let l_sep_y = left_ui.cursor().top();
+                left_ui
+                    .painter()
+                    .hline((left_x + pad_x)..=(left_x + col_w - pad_x), l_sep_y, Stroke::new(1.0, header_sep));
+                left_ui.add_space(8.0);
+                let mut job = (*src_job).clone();
+                job.wrap.max_width = f32::INFINITY;
+                egui::ScrollArea::horizontal()
+                    .id_salt(("manual_src_scroll", idx))
+                    .auto_shrink([false, true])
+                    .show(&mut left_ui, |ui| {
+                        ui.add(egui::Label::new(job).selectable(true).extend());
                     });
+                let left_bottom = left_ui.min_rect().bottom().max(left_ui.cursor().top()) + pad_y;
 
-                ui.add_space(6.0);
+                // 右栏：效果预览（复用主预览完全相同的解析和渲染逻辑）
+                let mut right_ui = ui.new_child(
+                    UiBuilder::new()
+                        .max_rect(Rect::from_min_size(pos2(right_x + pad_x, row_top + pad_y), vec2(inner_col_w, 100_000.0)))
+                        .layout(egui::Layout::top_down(Align::Min)),
+                );
+                right_ui.set_clip_rect(
+                    base_clip.intersect(Rect::from_x_y_ranges(
+                        (right_x + 1.0)..=(right_x + col_w - 1.0),
+                        -f32::INFINITY..=f32::INFINITY,
+                    )),
+                );
+                right_ui.spacing_mut().item_spacing.y = 0.0;
+                right_ui.set_width(inner_col_w);
+                right_ui.label(RichText::new("效果预览").size(11.5).color(right_ui.visuals().weak_text_color()));
+                right_ui.add_space(5.0);
+                let r_sep_y = right_ui.cursor().top();
+                right_ui
+                    .painter()
+                    .hline((right_x + pad_x)..=(right_x + col_w - pad_x), r_sep_y, Stroke::new(1.0, header_sep));
+                right_ui.add_space(8.0);
+                let mut card_scroll = self
+                    .preview_scroll_to
+                    .as_ref()
+                    .and_then(|(ci, a)| (*ci == idx).then(|| a.clone()));
+                right_ui.push_id(("manual_card_prev", idx), |ui| {
+                    preview::render_doc_inline(
+                        ui,
+                        10_000 + idx as u64,
+                        &prev_doc,
+                        &prev_th,
+                        PreviewOptions {
+                            base_dir: None,
+                            code_line_numbers: cfg.code_line_numbers,
+                            max_content_width: 0.0,
+                            allow_local_open: false,
+                        },
+                        &mut card_scroll,
+                    );
+                });
+                if let Some(a) = card_scroll {
+                    self.preview_scroll_to = Some((idx, a));
+                } else if self.preview_scroll_to.as_ref().is_some_and(|(ci, _)| *ci == idx) {
+                    self.preview_scroll_to = None;
+                }
+                let right_bottom = right_ui.min_rect().bottom().max(right_ui.cursor().top()) + pad_y;
 
-                // 5. 效果预览框（复用主预览完全相同的解析和渲染逻辑）
-                egui::Frame::new()
-                    .fill(prev_bg)
-                    .stroke(Stroke::new(1.0, border))
-                    .corner_radius(5)
-                    .inner_margin(Margin::symmetric(12, 10))
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.label(RichText::new("效果预览").size(11.5).color(ui.visuals().weak_text_color()));
-                        ui.add_space(4.0);
-                        let mut card_scroll = self
-                            .preview_scroll_to
-                            .as_ref()
-                            .and_then(|(ci, a)| (*ci == idx).then(|| a.clone()));
-                        ui.push_id(("manual_card_prev", idx), |ui| {
-                            preview::render_doc_inline(
-                                ui,
-                                10_000 + idx as u64,
-                                &prev_doc,
-                                &prev_th,
-                                PreviewOptions {
-                                    base_dir: None,
-                                    code_line_numbers: cfg.code_line_numbers,
-                                    max_content_width: 0.0,
-                                    allow_local_open: false,
-                                },
-                                &mut card_scroll,
-                            );
-                        });
-                        if let Some(a) = card_scroll {
-                            self.preview_scroll_to = Some((idx, a));
-                        } else if self.preview_scroll_to.as_ref().is_some_and(|(ci, _)| *ci == idx) {
-                            self.preview_scroll_to = None;
-                        }
-                    });
+                // 等高对齐两栏背景与边框，并推进外层光标
+                let row_bottom = left_bottom.max(right_bottom).max(row_top + 56.0);
+                let left_rect = Rect::from_min_max(pos2(left_x, row_top), pos2(left_x + col_w, row_bottom));
+                let right_rect = Rect::from_min_max(pos2(right_x, row_top), pos2(right_x + col_w, row_bottom));
+                ui.painter().set(left_fill_idx, Shape::rect_filled(left_rect, 6.0, src_bg));
+                ui.painter().set(
+                    left_stroke_idx,
+                    Shape::rect_stroke(left_rect, 6.0, Stroke::new(1.0, border), StrokeKind::Inside),
+                );
+                ui.painter().set(right_fill_idx, Shape::rect_filled(right_rect, 6.0, prev_bg));
+                ui.painter().set(
+                    right_stroke_idx,
+                    Shape::rect_stroke(right_rect, 6.0, Stroke::new(1.0, border), StrokeKind::Inside),
+                );
+                ui.advance_cursor_after_rect(Rect::from_min_max(
+                    pos2(left_x, row_top),
+                    pos2(right_x + col_w, row_bottom),
+                ));
             })
             .response;
 

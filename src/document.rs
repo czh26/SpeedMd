@@ -85,7 +85,6 @@ pub struct Document {
     pub base_dir_hint: Option<PathBuf>,
     pub title_hint: Option<String>,
     pub dirty: bool,
-    pub is_welcome: bool,
     pub is_manual: bool,
     pub version: u64,
     pub last_edit_at: Option<Instant>,
@@ -113,7 +112,6 @@ impl Document {
             base_dir_hint: None,
             title_hint: None,
             dirty: false,
-            is_welcome: false,
             is_manual: false,
             version: 1,
             last_edit_at: None,
@@ -127,13 +125,6 @@ impl Document {
             editor_top_byte: 0,
             view_before_source: None,
         }
-    }
-
-    pub fn from_welcome(welcome: &str) -> Self {
-        let mut doc = Self::new_empty();
-        doc.text = welcome.replace("\r\n", "\n");
-        doc.is_welcome = true;
-        doc
     }
 
     pub fn new_manual() -> Self {
@@ -162,7 +153,6 @@ impl Document {
     pub fn bump_version(&mut self) {
         self.version = self.version.wrapping_add(1);
         self.last_edit_at = Some(Instant::now());
-        self.is_welcome = false;
     }
 
     pub fn display_name(&self) -> String {
@@ -182,7 +172,7 @@ impl Document {
     }
 
     pub fn can_reuse_as_blank(&self) -> bool {
-        !self.is_manual && self.path.is_none() && !self.dirty && (self.text.is_empty() || self.is_welcome)
+        !self.is_manual && self.path.is_none() && !self.dirty && self.text.is_empty()
     }
 
     pub fn toggle_task(&mut self, offset: usize) {

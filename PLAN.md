@@ -310,10 +310,10 @@ cargo test                     # stats / keymap / find / textproc / html_inline 
 ## 9. 语法说明书
 
 ### 入口与模块位置
-- **命令与快捷键**：在 `src/commands.rs` 新增 `Command::OpenManual`（命令 id：`open_manual`，默认快捷键 `F1`），纳入统一命令与快捷键系统，可在「设置 → 快捷键」中自定义；顶部菜单栏新增「帮助 → 语法说明书」；`src/welcome.md` 开头添加提示语。
+- **命令与快捷键**：在 `src/commands.rs` 新增 `Command::OpenManual`（命令 id：`open_manual`，默认快捷键 `F1`），纳入统一命令与快捷键系统，可在「设置 → 快捷键」中自定义；顶部菜单栏新增「帮助 → 语法说明书」。
 - **特殊标签页（`📖 语法说明书`）**：在 `src/document.rs` / `src/tabs.rs` / `src/app.rs` 中以全局单例特殊标签页管理——再次按 `F1` 切换到已有标签页；只读且不计入未保存与最近关闭列表；不保存为 `session_paths` 文件路径，仅通过 `Settings` 的 `session_manual_open` / `session_manual_active` 记忆恢复；忽略 Edit/Split/Preview 视图切换及编辑/保存/查找/导出等不适用的命令。
 - **数据文件**：`src/manual.md` 在编译期通过 `include_str!("manual.md")` 嵌入程序，首次打开说明书时才在后台/按需解析并缓存于 `OnceLock`，不拖慢程序启动。
-- **界面与逻辑模块**：`src/manual.rs` 负责解析 `manual.md`、中英文同义词搜索（`Esc` 清空、显示命中条数）、左侧分类目录（点击跳转 + 滚动高亮）、右侧视口裁剪语法卡片（源码采用 `highlight::highlight_manual_source` 并以淡色 `·` 标示行尾空格、效果区复用 `markdown::parse` + `preview::render_doc_inline` 渲染、含「复制」与「插入到文档」按钮，及 `sup_sub` / `front_matter` 设置联动与「立即开启」按钮）。内置无网络依赖演示图片 `bytes://mdpad/*` 供示例渲染。
+- **界面与逻辑模块**：`src/manual.rs` 负责解析 `manual.md`、中英文同义词搜索（`Esc` 清空、显示命中条数）、左侧分类目录（点击跳转 + 滚动高亮）、右侧视口裁剪语法卡片（卡片主体采用**左源码、右效果预览**等高左右对比排版：左栏采用 `highlight::highlight_manual_source` 渲染高亮并以淡色 `·` 标示行尾空格、支持横向滚动；右栏复用 `markdown::parse` + `preview::render_doc_inline` 渲染实时效果；卡片顶部含「复制」与「插入到文档」按钮，及 `sup_sub` / `front_matter` 设置联动与「立即开启」按钮）。内置无网络依赖演示图片 `bytes://mdpad/*` 供示例渲染。
 
 ### `src/manual.md` 数据格式与新增条目方法
 新增语法条目**只需编辑 `src/manual.md` 并重新编译，无需修改 Rust 代码**，格式约定如下：
@@ -331,4 +331,4 @@ cargo test                     # stats / keymap / find / textproc / html_inline 
 
 ### 收录规模与实测指标
 - **收录范围**：共 **16 个分类、78 张语法卡片**（含 6 条常见问题）；`<iframe>` 网页嵌入因 MdPad 基于纯原生 `egui` 绘制、无内嵌 WebView 内核且 `markdown.rs` 未支持，故按「不收录实际不支持写法」原则排除。
-- **质量验证**：`cargo clippy --all-targets -- -D warnings` 零警告、`cargo build --release` 零警告、`cargo test` 46 项单元测试全部通过；`target/release/mdpad.exe` 体积为 `13,339,136` 字节（约 `12.72 MB`）。
+- **质量验证**：`cargo clippy --all-targets -- -D warnings` 零警告、`cargo build --release` 零警告、`cargo test` 46 项单元测试全部通过；`target/release/mdpad.exe` 体积为 `13,342,208` 字节（约 `12.72 MB`）。
