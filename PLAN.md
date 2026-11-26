@@ -290,7 +290,7 @@ cargo test                     # stats / keymap / find / textproc / html_inline 
 - [x] 阶段 5：内嵌 HTML 与音视频
 - [x] 阶段 6：剪贴板
 - [x] 阶段 7：导入 / 导出 HTML
-- [ ] 阶段 8：自定义快捷键
+- [x] 阶段 8：自定义快捷键
 
 ## 7. 实施中的决定
 - **Git 推送**（2026-11-26 用户决定）：每个阶段只在本地 `git commit`，**不推送**到 GitHub；等用户明确要求时再执行 `git push origin main`。
@@ -300,3 +300,7 @@ cargo test                     # stats / keymap / find / textproc / html_inline 
   - `cpu_ms`（主线程高亮 + `TextEdit` 排版与 UI 帧耗时）：平均 `5.24 ms`，P50 `5.09 ms`，P95 `6.59 ms`
   - `wall_ms`（端到端帧间隔，含垂直同步）：平均 `16.92 ms`，P50 `16.67 ms`，P95 `17.51 ms`
   - `release exe` 体积：`11,569,152` 字节（约 `11.03 MB`）
+- **阶段 8 全量收尾验收（release 终版）**：
+  - `cargo clippy --all-targets -- -D warnings`：0 警告通过；`cargo test`：40 项单元测试全部通过；`cargo build --release`：0 警告通过
+  - `release exe` 最终体积：`13,170,176` 字节（约 `12.56 MB`，低于 15 MB 上限；较基线 `10,072,064` 字节增加 `3,098,112` 字节 / 约 `+2.95 MB`）
+  - 终版 `MDPAD_BENCH=typing`（100,300 字符，200 样本）：`cpu_ms` 平均 `6.46 ms`（P50 `6.63 ms`，P95 `8.16 ms`），`wall_ms` 平均 `16.65 ms`（P50 `16.62 ms`，P95 `17.63 ms`）

@@ -169,6 +169,43 @@ impl Command {
         }
     }
 
+    pub fn category(self) -> &'static str {
+        match self {
+            Self::NewTab
+            | Self::CloseTab
+            | Self::ReopenClosedTab
+            | Self::NextTab
+            | Self::PrevTab
+            | Self::New
+            | Self::Open
+            | Self::OpenFolder
+            | Self::Save
+            | Self::SaveAs
+            | Self::ImportHtml
+            | Self::ExportHtml
+            | Self::ExportHtmlFragment
+            | Self::Quit => "文件与标签",
+            Self::Find
+            | Self::Replace
+            | Self::FindNext
+            | Self::FindPrev
+            | Self::InlineCode
+            | Self::CodeBlock
+            | Self::CopyAsMarkdown
+            | Self::CopyAsHtml
+            | Self::PastePlain => "编辑与剪贴板",
+            Self::ViewEdit
+            | Self::ViewSplit
+            | Self::ViewPreview
+            | Self::ToggleSourceMode
+            | Self::FontBigger
+            | Self::FontSmaller
+            | Self::FontReset => "视图与字号",
+            Self::ToggleSidebar | Self::SidebarFiles | Self::SidebarArticles | Self::SidebarOutline => "侧边栏",
+            Self::OpenShortcuts | Self::OpenSettings => "设置",
+        }
+    }
+
     pub fn default_shortcut(self) -> Option<Shortcut> {
         let ctrl = |key| Some(Shortcut::new(true, false, false, key));
         let ctrl_shift = |key| Some(Shortcut::new(true, true, false, key));

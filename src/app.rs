@@ -81,6 +81,7 @@ pub struct MdApp {
     export_dialog_open: bool,
     export_follow_theme: bool,
     export_embed_images: bool,
+    shortcuts_ui: crate::shortcuts_ui::ShortcutsUiState,
     shot: Option<ShotRunner>,
     bench: Option<BenchRunner>,
 }
@@ -159,6 +160,7 @@ impl MdApp {
             export_dialog_open: false,
             export_follow_theme: true,
             export_embed_images: false,
+            shortcuts_ui: crate::shortcuts_ui::ShortcutsUiState::default(),
             shot,
             bench,
         };
@@ -729,13 +731,18 @@ impl MdApp {
             Command::ExportHtmlFragment => {
                 self.start_export_dialog(ctx, false);
             }
-            Command::OpenShortcuts => {}
+            Command::OpenShortcuts => {
+                self.shortcuts_ui.open = true;
+            }
         }
     }
 
     // ---------- 输入处理 ----------
 
     fn handle_input(&mut self, ctx: &egui::Context) {
+        if self.shortcuts_ui.capture_input(ctx, &mut self.keymap) {
+            return;
+        }
         let cmds = ctx.input_mut(|i| self.keymap.match_and_consume(&mut i.events));
         for cmd in cmds {
             self.run_command(ctx, cmd);
@@ -862,6 +869,10 @@ impl MdApp {
             ui.menu_button("设置", |ui| {
                 if self.menu_btn(ui, Command::OpenSettings) {
                     pending_cmd = Some(Command::OpenSettings);
+                    ui.close();
+                }
+                if self.menu_btn(ui, Command::OpenShortcuts) {
+                    pending_cmd = Some(Command::OpenShortcuts);
                     ui.close();
                 }
                 ui.separator();
@@ -1317,6 +1328,11 @@ impl MdApp {
                     ui.label(egui::RichText::new("字数统计").strong());
                     ui.checkbox(&mut self.settings.stats_exclude_code, "统计时排除代码块与行内代码");
                     ui.checkbox(&mut self.settings.stats_exclude_syntax, "统计时忽略 Markdown 标记符号");
+
+                    ui.separator();
+                    if ui.button("自定义快捷键… (Ctrl+K)").clicked() {
+                        self.shortcuts_ui.open = true;
+                    }
                 });
             });
         self.settings_open = open;
@@ -1758,6 +1774,7 @@ impl eframe::App for MdApp {
         self.error_dialog(ctx);
         self.export_dialog_window(ctx);
         self.settings_window(ctx);
+        self.shortcuts_ui.window_ui(ctx, &mut self.keymap, &mut self.error);
         self.stats_popup_window(ctx);
         self.self_test_screenshot(ctx);
         self.bench_post_frame(ctx, cpu_start);

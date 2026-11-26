@@ -18,6 +18,7 @@ mod markdown;
 mod media;
 mod preview;
 mod settings;
+mod shortcuts_ui;
 mod sidebar;
 mod stats;
 mod tabs;

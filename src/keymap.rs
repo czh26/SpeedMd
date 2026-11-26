@@ -19,7 +19,6 @@ impl Shortcut {
         Self { ctrl, shift, alt, key }
     }
 
-    #[allow(dead_code)]
     pub fn from_event(key: Key, physical_key: Option<Key>, modifiers: egui::Modifiers) -> Option<Self> {
         let actual = if is_modifier_key(key) { return None; } else { physical_key_prefer_logical(key, physical_key) };
         let ctrl = modifiers.ctrl || modifiers.command;
@@ -27,7 +26,6 @@ impl Shortcut {
     }
 }
 
-#[allow(dead_code)]
 fn is_modifier_key(k: Key) -> bool {
     matches!(
         k,
@@ -42,7 +40,6 @@ fn is_modifier_key(k: Key) -> bool {
     )
 }
 
-#[allow(dead_code)]
 fn physical_key_prefer_logical(logical: Key, physical: Option<Key>) -> Key {
     match physical {
         Some(p)
@@ -252,22 +249,18 @@ impl Keymap {
         self.shortcut(cmd).map(|s| s.to_string()).unwrap_or_default()
     }
 
-    #[allow(dead_code)]
     pub fn set(&mut self, cmd: Command, sc: Option<Shortcut>) {
         self.bindings.insert(cmd, sc);
     }
 
-    #[allow(dead_code)]
     pub fn reset(&mut self, cmd: Command) {
         self.bindings.insert(cmd, cmd.default_shortcut());
     }
 
-    #[allow(dead_code)]
     pub fn reset_all(&mut self) {
         *self = Self::default();
     }
 
-    #[allow(dead_code)]
     pub fn find_conflict(&self, target: Command, sc: Shortcut) -> Option<Command> {
         Command::ALL.iter().copied().find(|&c| c != target && self.shortcut(c) == Some(sc))
     }
