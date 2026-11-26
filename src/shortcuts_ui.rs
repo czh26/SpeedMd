@@ -2,7 +2,8 @@
 
 use crate::commands::Command;
 use crate::keymap::{Keymap, Shortcut};
-use eframe::egui::{self, Align2, Color32, Event, Key};
+use crate::theme;
+use eframe::egui::{self, Align2, Event, Key};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy)]
@@ -154,7 +155,7 @@ impl ShortcutsUiState {
                 ui.add_space(4.0);
 
                 if let Some(conf) = self.conflict {
-                    let warn = Color32::from_rgb(0xd2, 0x99, 0x22);
+                    let warn = theme::current(ui.ctx()).semantic.warn;
                     egui::Frame::new()
                         .fill(warn.gamma_multiply(0.14))
                         .stroke(egui::Stroke::new(1.0, warn))

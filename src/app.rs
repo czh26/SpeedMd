@@ -13,11 +13,13 @@ use crate::settings::{Settings, SidebarTab, ViewMode};
 use crate::sidebar::{SidebarAction, SidebarState};
 use crate::stats::{self, StatsOptions};
 use crate::tabs::{self, TabAction};
+use crate::theme::{self, ThemeId};
 use crate::winutil;
 use eframe::egui::{
     self,
     text::{CCursor, CCursorRange},
-    Align2, CursorIcon, Rect, Sense,
+    vec2, Align2, CursorIcon, Popup, PopupCloseBehavior, PopupKind, Rect, RectAlign, Sense, SetOpenCommand, Stroke,
+    StrokeKind,
 };
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -84,6 +86,9 @@ pub struct MdApp {
     shortcuts_ui: crate::shortcuts_ui::ShortcutsUiState,
     manual: ManualState,
     last_doc_uid: Option<u64>,
+    #[allow(dead_code)] // 阶段 3 顶栏 ≡ 菜单接入
+    open_menu_once: bool,
+    open_theme_menu_once: bool,
     shot: Option<ShotRunner>,
     bench: Option<BenchRunner>,
 }
@@ -122,15 +127,19 @@ impl MdApp {
                 _ => {}
             }
             settings.sup_sub = std::env::var("MDPAD_SUPSUB").is_ok();
-            if std::env::var("MDPAD_DARK").is_ok() {
-                cc.egui_ctx.set_theme(egui::Theme::Dark);
-            } else {
-                cc.egui_ctx.set_theme(egui::Theme::Light);
-            }
             if let Ok(folder) = std::env::var("MDPAD_FOLDER") {
                 settings.workspace_folder = Some(winutil::clean_path(Path::new(&folder)));
             }
         }
+
+        let env_theme = std::env::var("MDPAD_THEME")
+            .ok()
+            .and_then(|s| ThemeId::from_env_str(&s))
+            .or_else(|| std::env::var("MDPAD_DARK").ok().map(|_| ThemeId::CarbonGold));
+        if let Some(t) = env_theme {
+            settings.theme = t;
+        }
+        theme::apply(&cc.egui_ctx, settings.theme);
 
         settings.ui_zoom = settings.ui_zoom.clamp(0.75, 2.0);
         cc.egui_ctx.set_zoom_factor(settings.ui_zoom);
@@ -169,6 +178,8 @@ impl MdApp {
             shortcuts_ui: crate::shortcuts_ui::ShortcutsUiState::default(),
             manual: ManualState::default(),
             last_doc_uid: None,
+            open_menu_once: false,
+            open_theme_menu_once: false,
             shot,
             bench,
         };
@@ -520,10 +531,36 @@ impl MdApp {
         }
     }
 
+    fn set_theme(&mut self, ctx: &egui::Context, id: ThemeId) {
+        self.settings.theme = id;
+        if id.is_dark() {
+            self.settings.dark_theme = id;
+        } else {
+            self.settings.light_theme = id;
+        }
+        theme::apply(ctx, id);
+        ctx.request_repaint();
+    }
+
+    fn toggle_day_night(&mut self, ctx: &egui::Context) {
+        let target = if self.settings.theme.is_dark() {
+            if self.settings.light_theme.is_dark() {
+                ThemeId::ZenHorizon
+            } else {
+                self.settings.light_theme
+            }
+        } else if self.settings.dark_theme.is_dark() {
+            self.settings.dark_theme
+        } else {
+            ThemeId::CarbonGold
+        };
+        self.set_theme(ctx, target);
+    }
+
     // ---------- 源代码模式与查找替换 ----------
 
     fn toggle_source_mode(&mut self, ctx: &egui::Context) {
-        let dark = ctx.global_style().visuals.dark_mode;
+        let theme = self.settings.theme;
         let font_size = self.settings.preview_font_size;
         let opts = self.parse_opts();
         let cur_mode = self.settings.mode;
@@ -533,7 +570,7 @@ impl MdApp {
             let line_height = self.settings.line_height;
             let para_spacing = self.settings.paragraph_spacing;
             let doc = self.doc_mut();
-            let cfg = ParseConfig { dark, font_size, line_height, para_spacing, opts: &opts, immediate: true };
+            let cfg = ParseConfig { theme, font_size, line_height, para_spacing, opts: &opts, immediate: true };
             doc.ensure_parsed(ctx, &cfg);
             if let Some((parsed, _, _)) = doc.parsed.get() {
                 let block_idx = parsed
@@ -549,7 +586,7 @@ impl MdApp {
             let line_height = self.settings.line_height;
             let para_spacing = self.settings.paragraph_spacing;
             let doc = self.doc_mut();
-            let cfg = ParseConfig { dark, font_size, line_height, para_spacing, opts: &opts, immediate: true };
+            let cfg = ParseConfig { theme, font_size, line_height, para_spacing, opts: &opts, immediate: true };
             doc.ensure_parsed(ctx, &cfg);
             let top_idx = doc.preview.top_block_idx;
             if let Some((parsed, _, _)) = doc.parsed.get()
@@ -769,6 +806,12 @@ impl MdApp {
             Command::FontBigger => self.adjust_font(ctx, Some(1.0)),
             Command::FontSmaller => self.adjust_font(ctx, Some(-1.0)),
             Command::FontReset => self.adjust_font(ctx, None),
+            Command::ToggleDayNight => self.toggle_day_night(ctx),
+            Command::Theme01 => self.set_theme(ctx, ThemeId::ZenHorizon),
+            Command::Theme02 => self.set_theme(ctx, ThemeId::ScarletStreak),
+            Command::Theme03 => self.set_theme(ctx, ThemeId::AtelierContrast),
+            Command::Theme04 => self.set_theme(ctx, ThemeId::CarbonGold),
+            Command::Theme05 => self.set_theme(ctx, ThemeId::TitaniumGlass),
             Command::OpenSettings => {
                 self.settings_open = true;
                 self.ensure_font_scan(ctx);
@@ -986,7 +1029,7 @@ impl MdApp {
 
             let is_manual = self.doc().is_manual;
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                egui::widgets::global_theme_preference_buttons(ui);
+                self.theme_toggle_button(ui);
                 ui.separator();
                 ui.add_enabled_ui(!is_manual, |ui| {
                     let mode = &mut self.settings.mode;
@@ -1000,6 +1043,104 @@ impl MdApp {
         if let Some(cmd) = pending_cmd {
             self.run_command(&ctx, cmd);
         }
+    }
+
+    fn theme_toggle_button(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let spec = theme::current(&ctx);
+        let btn_size = vec2(28.0, 26.0);
+        let (rect, resp) = ui.allocate_exact_size(btn_size, Sense::click());
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        }
+        let bg = if resp.is_pointer_button_down_on() {
+            spec.active_bg
+        } else if resp.hovered() {
+            spec.hover_bg
+        } else {
+            spec.surface_bg
+        };
+        ui.painter().add(spec.mode_switch.container_shadow.as_shape(rect, 8));
+        ui.painter().rect_filled(rect, 8.0, bg);
+        ui.painter().rect_stroke(rect, 8.0, Stroke::new(1.0, spec.border), StrokeKind::Inside);
+        theme::paint_bolt(ui.painter(), rect.shrink(6.0), spec.accent);
+
+        if resp.clicked() {
+            self.toggle_day_night(&ctx);
+        }
+
+        let open_cmd = if self.open_theme_menu_once {
+            self.open_theme_menu_once = false;
+            Some(SetOpenCommand::Bool(true))
+        } else if resp.secondary_clicked() {
+            Some(SetOpenCommand::Toggle)
+        } else {
+            None
+        };
+
+        let mut picked: Option<ThemeId> = None;
+        Popup::from_response(&resp)
+            .kind(PopupKind::Menu)
+            .layout(egui::Layout::top_down_justified(egui::Align::Min))
+            .style(egui::containers::menu::menu_style)
+            .align(RectAlign::BOTTOM_END)
+            .gap(4.0)
+            .open_memory(open_cmd)
+            .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_min_width(248.0);
+                ui.label(egui::RichText::new("选择界面主题").strong());
+                ui.weak("左键 ⚡ 快速切换日/夜 · 右键打开列表");
+                ui.separator();
+                for id in ThemeId::ALL {
+                    let s = id.spec();
+                    let active = id == self.settings.theme;
+                    let (row_r, row_resp) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
+                    if row_resp.hovered() {
+                        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                        ui.painter().rect_filled(row_r, 5.0, spec.hover_bg);
+                    } else if active {
+                        ui.painter().rect_filled(row_r, 5.0, spec.active_bg);
+                    }
+                    // 双色块预览（左底色 / 右强调色）
+                    let sw = Rect::from_min_size(egui::pos2(row_r.left() + 6.0, row_r.center().y - 7.0), vec2(20.0, 14.0));
+                    let left_sw = Rect::from_min_max(sw.min, egui::pos2(sw.center().x, sw.max.y));
+                    let right_sw = Rect::from_min_max(egui::pos2(sw.center().x, sw.min.y), sw.max);
+                    ui.painter().rect_filled(left_sw, 2.0, s.sidebar.bg);
+                    ui.painter().rect_filled(right_sw, 2.0, s.accent);
+                    ui.painter().rect_stroke(sw, 3.0, Stroke::new(1.0, spec.border), StrokeKind::Inside);
+
+                    let mark = if active { "✓ " } else { "" };
+                    let text_col = if active { spec.strong_fg } else { spec.text_fg };
+                    ui.painter().text(
+                        egui::pos2(sw.right() + 8.0, row_r.center().y),
+                        Align2::LEFT_CENTER,
+                        format!("{mark}{}", id.short_label()),
+                        egui::FontId::proportional(13.0),
+                        text_col,
+                    );
+                    ui.painter().text(
+                        egui::pos2(row_r.right() - 6.0, row_r.center().y),
+                        Align2::RIGHT_CENTER,
+                        id.mode_tag(),
+                        egui::FontId::proportional(11.5),
+                        spec.muted_fg,
+                    );
+                    if row_resp.clicked() {
+                        picked = Some(id);
+                        ui.close();
+                    }
+                }
+            });
+        if let Some(id) = picked {
+            self.set_theme(&ctx, id);
+        }
+
+        resp.on_hover_text(format!(
+            "当前主题：{}\n左键：日/夜热切换（{}）\n右键：选择 5 套主题",
+            self.settings.theme.full_label(),
+            self.keymap.label(Command::ToggleDayNight),
+        ));
     }
 
     fn tab_bar(&mut self, ui: &mut egui::Ui) {
@@ -1106,7 +1247,7 @@ impl MdApp {
 
     fn preview_pane(&mut self, ui: &mut egui::Ui) {
         self.preview_rect = ui.max_rect();
-        let dark = ui.visuals().dark_mode;
+        let theme = self.settings.theme;
         let font_size = self.settings.preview_font_size;
         let line_height = self.settings.line_height;
         let para_spacing = self.settings.paragraph_spacing;
@@ -1117,7 +1258,7 @@ impl MdApp {
 
         let actions = {
             let doc = self.doc_mut();
-            let pcfg = ParseConfig { dark, font_size, line_height, para_spacing, opts: &opts, immediate: true };
+            let pcfg = ParseConfig { theme, font_size, line_height, para_spacing, opts: &opts, immediate: true };
             doc.ensure_parsed(&ctx, &pcfg);
             let base = doc.base_dir().map(Path::to_path_buf);
             if let Some((parsed_doc, th, key)) = doc.parsed.get() {
@@ -1365,6 +1506,47 @@ impl MdApp {
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
+                    ui.label(egui::RichText::new("主题与外观").strong());
+                    let mut chosen_theme = self.settings.theme;
+                    egui::Grid::new("settings_theme").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+                        ui.label("当前界面主题");
+                        egui::ComboBox::from_id_salt("settings_theme_combo")
+                            .width(260.0)
+                            .selected_text(chosen_theme.full_label())
+                            .show_ui(ui, |ui| {
+                                for id in ThemeId::ALL {
+                                    ui.selectable_value(&mut chosen_theme, id, id.full_label());
+                                }
+                            });
+                        ui.end_row();
+
+                        ui.label("日间热切换偏好");
+                        egui::ComboBox::from_id_salt("settings_light_pair_combo")
+                            .width(260.0)
+                            .selected_text(self.settings.light_theme.full_label())
+                            .show_ui(ui, |ui| {
+                                for id in [ThemeId::ZenHorizon, ThemeId::ScarletStreak, ThemeId::AtelierContrast] {
+                                    ui.selectable_value(&mut self.settings.light_theme, id, id.full_label());
+                                }
+                            });
+                        ui.end_row();
+
+                        ui.label("夜间热切换偏好");
+                        egui::ComboBox::from_id_salt("settings_dark_pair_combo")
+                            .width(260.0)
+                            .selected_text(self.settings.dark_theme.full_label())
+                            .show_ui(ui, |ui| {
+                                for id in [ThemeId::CarbonGold, ThemeId::TitaniumGlass] {
+                                    ui.selectable_value(&mut self.settings.dark_theme, id, id.full_label());
+                                }
+                            });
+                        ui.end_row();
+                    });
+                    if chosen_theme != self.settings.theme {
+                        self.set_theme(ctx, chosen_theme);
+                    }
+                    ui.separator();
+
                     ui.label(egui::RichText::new("字体").strong());
                     if scanning {
                         ui.weak("正在后台扫描系统字体…");
@@ -1507,7 +1689,7 @@ impl MdApp {
 
         let out_path = winutil::clean_path(&picked);
         let md = doc.text.clone();
-        let dark_theme = full_document && self.export_follow_theme && ctx.global_style().visuals.dark_mode;
+        let dark_theme = full_document && self.export_follow_theme && self.settings.theme.is_dark();
         let opts = crate::export::ExportOptions {
             full_document,
             dark_theme,
@@ -1641,7 +1823,11 @@ impl MdApp {
         }
         if let Some(cmds) = commands {
             for id in cmds {
-                if let Some(cmd) = Command::from_id(&id) {
+                if id == "open_menu" {
+                    self.open_menu_once = true;
+                } else if id == "open_theme_menu" {
+                    self.open_theme_menu_once = true;
+                } else if let Some(cmd) = Command::from_id(&id) {
                     self.run_command(ctx, cmd);
                 }
             }
@@ -1777,7 +1963,11 @@ impl eframe::App for MdApp {
             self.error = Some(e);
         }
 
+        let theme_before_input = self.settings.theme;
         self.handle_input(ctx);
+        if self.settings.theme != theme_before_input {
+            *ui.style_mut() = (*ctx.global_style()).clone();
+        }
         self.update_title(ctx);
         if !self.doc().is_manual {
             self.last_doc_uid = Some(self.doc().uid);
@@ -1801,14 +1991,14 @@ impl eframe::App for MdApp {
             && (self.settings.mode == ViewMode::Edit
                 || (self.settings.sidebar_open && self.settings.sidebar_tab == SidebarTab::Outline))
         {
-            let dark = ui.visuals().dark_mode;
+            let theme = self.settings.theme;
             let font_size = self.settings.preview_font_size;
             let line_height = self.settings.line_height;
             let para_spacing = self.settings.paragraph_spacing;
             let opts = self.parse_opts();
             let immediate = self.settings.mode != ViewMode::Edit;
             let doc = self.doc_mut();
-            let pcfg = ParseConfig { dark, font_size, line_height, para_spacing, opts: &opts, immediate };
+            let pcfg = ParseConfig { theme, font_size, line_height, para_spacing, opts: &opts, immediate };
             doc.ensure_parsed(ctx, &pcfg);
         }
 

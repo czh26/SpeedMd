@@ -6,6 +6,7 @@ use crate::markdown::{self, Doc, ParseOptions, Theme};
 use crate::preview::PreviewState;
 use crate::settings::ViewMode;
 use crate::stats::StatsCache;
+use crate::theme::ThemeId;
 use eframe::egui;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -17,14 +18,26 @@ use std::time::{Duration, Instant};
 
 static NEXT_UID: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Default)]
 pub struct ParseCache {
     key: u64,
     cached: Option<(Arc<Doc>, Theme)>,
+    last_version: u64,
+    last_parse_ms: f32,
+}
+
+impl Default for ParseCache {
+    fn default() -> Self {
+        Self {
+            key: 0,
+            cached: None,
+            last_version: 0,
+            last_parse_ms: 0.2,
+        }
+    }
 }
 
 pub struct ParseConfig<'a> {
-    pub dark: bool,
+    pub theme: ThemeId,
     pub font_size: f32,
     pub line_height: f32,
     pub para_spacing: f32,
@@ -45,7 +58,7 @@ impl ParseCache {
         let mut h = DefaultHasher::new();
         (
             version,
-            cfg.dark,
+            cfg.theme,
             cfg.font_size.to_bits(),
             cfg.line_height.to_bits(),
             cfg.para_spacing.to_bits(),
@@ -67,14 +80,24 @@ impl ParseCache {
                 }
             }
         }
-        let th = Theme::with_spacing(cfg.dark, cfg.font_size, cfg.line_height, cfg.para_spacing);
+        let started = Instant::now();
+        let th = Theme::with_spacing(cfg.theme.is_dark(), cfg.font_size, cfg.line_height, cfg.para_spacing);
         let doc = markdown::parse(doc_text, &th, cfg.opts);
+        if self.last_version != version || self.cached.is_none() {
+            self.last_parse_ms = (started.elapsed().as_secs_f32() * 1000.0).max(0.05);
+            self.last_version = version;
+        }
         self.cached = Some((Arc::new(doc), th));
         self.key = key;
     }
 
     pub fn get(&self) -> Option<(&Doc, &Theme, u64)> {
         self.cached.as_ref().map(|(d, t)| (&**d, t, self.key))
+    }
+
+    #[allow(dead_code)] // 阶段 3 底栏 ⚡ 耗时遥测接入
+    pub fn last_parse_ms(&self) -> f32 {
+        self.last_parse_ms
     }
 }
 

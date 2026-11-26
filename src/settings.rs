@@ -1,5 +1,6 @@
 //! 应用持久化设置。
 
+use crate::theme::{deserialize_dark_theme_fallback, ThemeId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -22,9 +23,22 @@ fn default_true() -> bool {
     true
 }
 
+fn default_dark_theme() -> ThemeId {
+    ThemeId::CarbonGold
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// 当前激活的主题（默认 01 无界疾风）
+    #[serde(default)]
+    pub theme: ThemeId,
+    /// 日/夜热切换：日间偏好主题（默认 01 无界疾风）
+    #[serde(default)]
+    pub light_theme: ThemeId,
+    /// 日/夜热切换：夜间偏好主题（默认 04 黑金疾电）
+    #[serde(default = "default_dark_theme", deserialize_with = "deserialize_dark_theme_fallback")]
+    pub dark_theme: ThemeId,
     pub mode: ViewMode,
     pub editor_font_size: f32,
     pub preview_font_size: f32,
@@ -69,6 +83,9 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            theme: ThemeId::ZenHorizon,
+            light_theme: ThemeId::ZenHorizon,
+            dark_theme: ThemeId::CarbonGold,
             mode: ViewMode::Split,
             editor_font_size: 15.0,
             preview_font_size: 16.0,
@@ -97,5 +114,40 @@ impl Default for Settings {
             stats_exclude_syntax: true,
             keybindings: BTreeMap::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_or_unknown_theme_falls_back_to_zen_horizon_preserving_settings() {
+        let empty: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.theme, ThemeId::ZenHorizon);
+        assert_eq!(empty.light_theme, ThemeId::ZenHorizon);
+        assert_eq!(empty.dark_theme, ThemeId::CarbonGold);
+
+        let legacy_json = r#"{
+            "mode": "Preview",
+            "editor_font_size": 19.0,
+            "sup_sub": true,
+            "restore_tabs": false,
+            "keybindings": { "save": "Ctrl+Alt+S" }
+        }"#;
+        let legacy: Settings = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(legacy.theme, ThemeId::ZenHorizon);
+        assert_eq!(legacy.light_theme, ThemeId::ZenHorizon);
+        assert_eq!(legacy.dark_theme, ThemeId::CarbonGold);
+        assert_eq!(legacy.mode, ViewMode::Preview);
+        assert!((legacy.editor_font_size - 19.0).abs() < 1e-6);
+        assert!(legacy.sup_sub);
+        assert!(!legacy.restore_tabs);
+        assert_eq!(legacy.keybindings.get("save").map(String::as_str), Some("Ctrl+Alt+S"));
+
+        let invalid_json = r#"{ "theme": "no_such_theme_xyz", "editor_font_size": 21.0 }"#;
+        let invalid: Settings = serde_json::from_str(invalid_json).unwrap();
+        assert_eq!(invalid.theme, ThemeId::ZenHorizon);
+        assert!((invalid.editor_font_size - 21.0).abs() < 1e-6);
     }
 }
