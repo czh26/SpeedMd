@@ -18,6 +18,10 @@ pub enum SidebarTab {
     Outline,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -48,6 +52,9 @@ pub struct Settings {
     pub auto_pair: bool,
     /// 在围栏代码块内也自动闭合括号与引号
     pub auto_pair_in_code: bool,
+    /// 粘贴网页/富文本剪贴板内容时自动转为 Markdown
+    #[serde(default = "default_true")]
+    pub paste_html_as_md: bool,
     /// 代码块预览显示行号
     pub code_line_numbers: bool,
     /// 字数统计选项
@@ -80,6 +87,7 @@ impl Default for Settings {
             workspace_folder: None,
             auto_pair: true,
             auto_pair_in_code: true,
+            paste_html_as_md: true,
             code_line_numbers: true,
             stats_exclude_code: false,
             stats_exclude_syntax: true,

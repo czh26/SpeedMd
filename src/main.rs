@@ -1,7 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // release 版不弹出控制台窗口
 
 mod app;
+mod clipboard;
 mod commands;
+mod convert;
 mod document;
 mod editor;
 mod find;

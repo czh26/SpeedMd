@@ -1,5 +1,8 @@
 //! 编辑器面板：TextEdit 包装、编程式 EditOps（单步撤销）、括号/围栏自动补全、跳转到偏移。
 
+use crate::clipboard;
+use crate::commands::Command;
+use crate::convert;
 use crate::document::Document;
 use crate::highlight::FindOverlay;
 use eframe::egui::{
@@ -8,6 +11,7 @@ use eframe::egui::{
     vec2, Align, Event, FontFamily, ImeEvent, Key, TextEdit,
 };
 use std::ops::Range;
+use std::path::{Path, PathBuf};
 
 pub fn editor_id(uid: u64) -> egui::Id {
     egui::Id::unique(("editor_text", uid))
@@ -100,6 +104,63 @@ impl TextPatch {
 
 pub fn apply_text_patch(ctx: &egui::Context, doc: &mut Document, patch: TextPatch) {
     apply_edit(ctx, doc, |text, _| patch.apply(text));
+}
+
+pub fn selected_text(ctx: &egui::Context, doc: &Document) -> Option<String> {
+    let r = current_selection_chars(ctx, doc.uid, &doc.text);
+    if r.start < r.end {
+        let b0 = char_to_byte(&doc.text, r.start);
+        let b1 = char_to_byte(&doc.text, r.end);
+        Some(doc.text[b0..b1].to_string())
+    } else {
+        None
+    }
+}
+
+/// 在当前光标或选区位置插入纯文本（统一换行、可一次 Ctrl+Z 撤销）。
+pub fn insert_text(ctx: &egui::Context, doc: &mut Document, insertion: &str) {
+    let norm = insertion.replace("\r\n", "\n").replace('\r', "\n");
+    apply_edit(ctx, doc, |text, before| {
+        let r = sorted_char_range(before);
+        let max_c = text.chars().count();
+        let c0 = r.start.min(max_c);
+        let c1 = r.end.min(max_c);
+        let b0 = char_to_byte(text, c0);
+        let b1 = char_to_byte(text, c1);
+        text.replace_range(b0..b1, &norm);
+        let after_c = c0 + norm.chars().count();
+        CCursorRange::one(CCursor::new(after_c))
+    });
+}
+
+/// 智能粘贴：优先尝试网页 HTML 转 Markdown，其次剪贴板图像落盘为 `assets/*.png`，最后纯文本。
+pub fn smart_paste(
+    ctx: &egui::Context,
+    doc: &mut Document,
+    fallback_text: Option<&str>,
+    paste_html_as_md: bool,
+    base_dir: Option<&Path>,
+) -> bool {
+    if paste_html_as_md
+        && let Some(html) = clipboard::get_html()
+    {
+        let md = convert::html_to_markdown(&html);
+        if !md.trim().is_empty() {
+            insert_text(ctx, doc, &md);
+            return true;
+        }
+    }
+    if fallback_text.is_none_or(str::is_empty)
+        && let Some((_, url)) = clipboard::get_and_save_image(base_dir)
+    {
+        insert_text(ctx, doc, &format!("![]({url})"));
+        return true;
+    }
+    if let Some(txt) = fallback_text.filter(|s| !s.is_empty()).map(str::to_owned).or_else(clipboard::get_text) {
+        insert_text(ctx, doc, &txt);
+        return true;
+    }
+    false
 }
 
 fn open_pair_close(ch: char) -> Option<char> {
@@ -341,6 +402,16 @@ pub struct EditorConfig {
     pub max_content_width: f32,
     pub auto_pair: bool,
     pub auto_pair_in_code: bool,
+    pub paste_html_as_md: bool,
+    pub base_dir: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy)]
+enum ContextAction {
+    Cut,
+    Copy,
+    Paste,
+    Cmd(Command),
 }
 
 fn process_pre_events(ctx: &egui::Context, doc: &mut Document, cfg: &EditorConfig) {
@@ -357,6 +428,18 @@ fn process_pre_events(ctx: &egui::Context, doc: &mut Document, cfg: &EditorConfi
     while i < events.len() {
         let mut consumed = false;
         match &events[i] {
+            Event::Paste(s) => {
+                smart_paste(ctx, doc, Some(s), cfg.paste_html_as_md, cfg.base_dir.as_deref());
+                consumed = true;
+            }
+            Event::PasteImage(img) => {
+                if let Ok((_, url)) =
+                    clipboard::save_rgba_image(img.width(), img.height(), img.as_raw(), cfg.base_dir.as_deref())
+                {
+                    insert_text(ctx, doc, &format!("![]({url})"));
+                }
+                consumed = true;
+            }
             Event::Ime(ImeEvent::Preedit { text, .. }) => {
                 composing = !text.is_empty();
             }
@@ -425,7 +508,7 @@ fn process_pre_events(ctx: &egui::Context, doc: &mut Document, cfg: &EditorConfi
     ctx.data_mut(|d| d.insert_temp(ime_id, composing));
 }
 
-pub fn show(ui: &mut egui::Ui, doc: &mut Document, cfg: &EditorConfig) -> egui::Response {
+pub fn show(ui: &mut egui::Ui, doc: &mut Document, cfg: &EditorConfig) -> Option<Command> {
     let ctx = ui.ctx().clone();
     process_pre_events(&ctx, doc, cfg);
 
@@ -453,10 +536,15 @@ pub fn show(ui: &mut egui::Ui, doc: &mut Document, cfg: &EditorConfig) -> egui::
     let uid = doc.uid;
     let version = doc.version;
     let max_width = cfg.max_content_width;
+    let has_selection = {
+        let r = current_selection_chars(&ctx, uid, &doc.text);
+        r.start < r.end
+    };
     let mut changed = false;
     let mut top_byte = doc.editor_top_byte;
+    let mut ctx_action: Option<ContextAction> = None;
 
-    let inner = {
+    {
         let Document { text, hl, find, .. } = doc;
         let overlay = find.open.then(|| FindOverlay {
             matches: find.matches.as_slice(),
@@ -516,9 +604,36 @@ pub fn show(ui: &mut egui::Ui, doc: &mut Document, cfg: &EditorConfig) -> egui::
                 if output.response.changed() {
                     changed = true;
                 }
-                output.response.response
-            })
-    };
+                let resp = output.response.response;
+                resp.context_menu(|ui| {
+                    if ui.add_enabled(has_selection, egui::Button::new("剪切\tCtrl+X")).clicked() {
+                        ctx_action = Some(ContextAction::Cut);
+                        ui.close();
+                    }
+                    if ui.add_enabled(has_selection, egui::Button::new("复制\tCtrl+C")).clicked() {
+                        ctx_action = Some(ContextAction::Copy);
+                        ui.close();
+                    }
+                    if ui.button("粘贴\tCtrl+V").clicked() {
+                        ctx_action = Some(ContextAction::Paste);
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("纯文本粘贴\tCtrl+Shift+V").clicked() {
+                        ctx_action = Some(ContextAction::Cmd(Command::PastePlain));
+                        ui.close();
+                    }
+                    if ui.button("复制为 Markdown").clicked() {
+                        ctx_action = Some(ContextAction::Cmd(Command::CopyAsMarkdown));
+                        ui.close();
+                    }
+                    if ui.button("复制为 HTML\tCtrl+Shift+C").clicked() {
+                        ctx_action = Some(ContextAction::Cmd(Command::CopyAsHtml));
+                        ui.close();
+                    }
+                });
+            });
+    }
 
     doc.editor_top_byte = top_byte;
     if changed {
@@ -526,7 +641,30 @@ pub fn show(ui: &mut egui::Ui, doc: &mut Document, cfg: &EditorConfig) -> egui::
         doc.bump_version();
         doc.find.invalidate();
     }
-    inner.inner
+
+    let mut command = None;
+    if let Some(act) = ctx_action {
+        match act {
+            ContextAction::Cut => {
+                if let Some(sel) = selected_text(&ctx, doc) {
+                    let _ = clipboard::set_text(&sel);
+                    insert_text(&ctx, doc, "");
+                }
+            }
+            ContextAction::Copy => {
+                if let Some(sel) = selected_text(&ctx, doc) {
+                    let _ = clipboard::set_text(&sel);
+                }
+            }
+            ContextAction::Paste => {
+                smart_paste(&ctx, doc, None, cfg.paste_html_as_md, cfg.base_dir.as_deref());
+            }
+            ContextAction::Cmd(c) => command = Some(c),
+        }
+        ctx.memory_mut(|m| m.request_focus(id));
+    }
+
+    command
 }
 
 #[cfg(test)]

@@ -288,7 +288,7 @@ cargo test                     # stats / keymap / find / textproc / html_inline 
 - [x] 阶段 3：外观与字数统计
 - [x] 阶段 4：侧边栏（文件树、文章列表、大纲）
 - [x] 阶段 5：内嵌 HTML 与音视频
-- [ ] 阶段 6：剪贴板
+- [x] 阶段 6：剪贴板
 - [ ] 阶段 7：导入 / 导出 HTML
 - [ ] 阶段 8：自定义快捷键
 

@@ -12,8 +12,9 @@ egui = { version = "0.37", features = ["monochrome_emoji_fonts"] }
 # 图片加载（本地 + 网络）、代码块语法高亮
 egui_extras = { version = "0.37", features = ["file", "http", "image"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+arboard = "3.7"
 # Markdown 解析（CommonMark + GFM + 脚注 + 上下标 + Front Matter）
-pulldown-cmark = { version = "0.13", default-features = false }
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 read-fonts = "0.41"
 regex = "1"
 # :emoji: 短码

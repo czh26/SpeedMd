@@ -668,12 +668,32 @@ impl MdApp {
                 self.settings_open = true;
                 self.ensure_font_scan(ctx);
             }
+            Command::CopyAsMarkdown => {
+                let doc = self.doc();
+                let md = editor::selected_text(ctx, doc).unwrap_or_else(|| doc.text.clone());
+                if let Err(e) = crate::clipboard::set_text(&md) {
+                    self.error = Some(e);
+                }
+            }
+            Command::CopyAsHtml => {
+                let doc = self.doc();
+                let md = editor::selected_text(ctx, doc).unwrap_or_else(|| doc.text.clone());
+                let html = crate::convert::basic_markdown_to_html(&md);
+                if let Err(e) = crate::clipboard::set_html(&html, &md) {
+                    self.error = Some(e);
+                }
+            }
+            Command::PastePlain => {
+                if self.settings.mode != ViewMode::Preview
+                    && let Some(text) = crate::clipboard::get_text()
+                {
+                    let doc = self.doc_mut();
+                    editor::insert_text(ctx, doc, &text);
+                }
+            }
             Command::ImportHtml
             | Command::ExportHtml
             | Command::ExportHtmlFragment
-            | Command::CopyAsMarkdown
-            | Command::CopyAsHtml
-            | Command::PastePlain
             | Command::OpenShortcuts => {}
         }
     }
@@ -753,6 +773,13 @@ impl MdApp {
                 }
                 ui.separator();
                 for cmd in [Command::InlineCode, Command::CodeBlock] {
+                    if self.menu_btn(ui, cmd) {
+                        pending_cmd = Some(cmd);
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                for cmd in [Command::PastePlain, Command::CopyAsMarkdown, Command::CopyAsHtml] {
                     if self.menu_btn(ui, cmd) {
                         pending_cmd = Some(cmd);
                         ui.close();
@@ -906,9 +933,13 @@ impl MdApp {
             max_content_width: self.settings.max_content_width,
             auto_pair: self.settings.auto_pair,
             auto_pair_in_code: self.settings.auto_pair_in_code,
+            paste_html_as_md: self.settings.paste_html_as_md,
+            base_dir: self.doc().base_dir().map(Path::to_path_buf),
         };
-        let doc = self.doc_mut();
-        editor::show(ui, doc, &cfg);
+        if let Some(cmd) = editor::show(ui, self.doc_mut(), &cfg) {
+            let ctx = ui.ctx().clone();
+            self.run_command(&ctx, cmd);
+        }
     }
 
     fn preview_pane(&mut self, ui: &mut egui::Ui) {
@@ -1237,6 +1268,7 @@ impl MdApp {
                         self.settings.auto_pair,
                         egui::Checkbox::new(&mut self.settings.auto_pair_in_code, "代码块内也自动补全"),
                     );
+                    ui.checkbox(&mut self.settings.paste_html_as_md, "粘贴网页/富文本时自动转为 Markdown");
                     ui.checkbox(&mut self.settings.restore_tabs, "启动时恢复上次打开的标签");
 
                     ui.separator();
