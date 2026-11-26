@@ -1,0 +1,32 @@
+[package]
+name = "mdpad"
+version = "0.1.0"
+edition = "2024"
+description = "极速 Markdown 编辑器（Rust + egui）"
+
+[dependencies]
+# 用 OpenGL(glow) 渲染：比 wgpu 启动更快、exe 更小
+eframe = { version = "0.37", default-features = false, features = ["glow", "clipboard", "default_fonts", "links", "persistence"] }
+# 图标字体（主题切换、代码块复制按钮等用到的符号）
+egui = { version = "0.37", features = ["monochrome_emoji_fonts"] }
+# 图片加载（本地 + 网络）、代码块语法高亮
+egui_extras = { version = "0.37", features = ["file", "http", "image"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+# Markdown 解析（CommonMark + GFM + 脚注 + 上下标 + Front Matter）
+pulldown-cmark = { version = "0.13", default-features = false }
+# :emoji: 短码
+emojis = "0.9"
+rfd = "0.18"
+serde = { version = "1", features = ["derive"] }
+
+# 发布版：最大化运行速度、最小化体积
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# 开发时也对依赖做优化，避免 debug 版 UI 卡顿
+[profile.dev.package."*"]
+opt-level = 2
