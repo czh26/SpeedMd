@@ -94,6 +94,7 @@ pub struct Document {
     pub find: FindState,
     pub pending_selection: Option<Range<usize>>,
     pub scroll_to_selection: bool,
+    pub editor_top_byte: usize,
     pub view_before_source: Option<ViewMode>,
 }
 
@@ -119,6 +120,7 @@ impl Document {
             find: FindState::default(),
             pending_selection: None,
             scroll_to_selection: false,
+            editor_top_byte: 0,
             view_before_source: None,
         }
     }

@@ -133,11 +133,11 @@ pub enum Block {
     Html(String),
 }
 
+#[derive(Clone)]
 pub struct Heading {
     pub level: u8,
     pub text: String,
     pub anchor: String,
-    #[allow(dead_code)]
     pub byte_offset: usize,
 }
 

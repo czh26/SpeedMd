@@ -454,6 +454,7 @@ pub fn show(ui: &mut egui::Ui, doc: &mut Document, cfg: &EditorConfig) -> egui::
     let version = doc.version;
     let max_width = cfg.max_content_width;
     let mut changed = false;
+    let mut top_byte = doc.editor_top_byte;
 
     let inner = {
         let Document { text, hl, find, .. } = doc;
@@ -501,6 +502,10 @@ pub fn show(ui: &mut egui::Ui, doc: &mut Document, cfg: &EditorConfig) -> egui::
                     render_edit(ui)
                 };
 
+                let rel_y = (ui.clip_rect().top() - output.galley_pos.y).max(0.0);
+                let top_char = output.galley.cursor_from_pos(vec2(0.0, rel_y)).index.0;
+                top_byte = char_to_byte(text, top_char);
+
                 if let Some(c) = scroll_target_char {
                     let rect = output
                         .galley
@@ -515,6 +520,7 @@ pub fn show(ui: &mut egui::Ui, doc: &mut Document, cfg: &EditorConfig) -> egui::
             })
     };
 
+    doc.editor_top_byte = top_byte;
     if changed {
         doc.dirty = true;
         doc.bump_version();

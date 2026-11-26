@@ -9,6 +9,7 @@ use crate::keymap::Keymap;
 use crate::markdown::ParseOptions;
 use crate::preview::PreviewOptions;
 use crate::settings::{Settings, SidebarTab, ViewMode};
+use crate::sidebar::{SidebarAction, SidebarState};
 use crate::stats::{self, StatsOptions};
 use crate::tabs::{self, TabAction};
 use crate::winutil;
@@ -75,6 +76,7 @@ pub struct MdApp {
     settings_open: bool,
     font_search: String,
     stats_popup_open: bool,
+    sidebar: SidebarState,
     shot: Option<ShotRunner>,
     bench: Option<BenchRunner>,
 }
@@ -114,6 +116,9 @@ impl MdApp {
             } else {
                 cc.egui_ctx.set_theme(egui::Theme::Light);
             }
+            if let Ok(folder) = std::env::var("MDPAD_FOLDER") {
+                settings.workspace_folder = Some(winutil::clean_path(Path::new(&folder)));
+            }
         }
 
         settings.ui_zoom = settings.ui_zoom.clamp(0.75, 2.0);
@@ -145,6 +150,7 @@ impl MdApp {
             settings_open: false,
             font_search: String::new(),
             stats_popup_open,
+            sidebar: SidebarState::default(),
             shot,
             bench,
         };
@@ -387,6 +393,48 @@ impl MdApp {
             if path.is_file() {
                 self.open_file(path);
                 return;
+            }
+        }
+    }
+
+    fn sync_tabs_after_rename(&mut self, old: &Path, new: &Path) {
+        let old_clean = winutil::clean_path(old);
+        let new_clean = winutil::clean_path(new);
+        for d in &mut self.docs {
+            if let Some(p) = &d.path {
+                if crate::sidebar::files::paths_eq(p, &old_clean) {
+                    d.path = Some(new_clean.clone());
+                } else if let Ok(rel) = p.strip_prefix(&old_clean) {
+                    d.path = Some(new_clean.join(rel));
+                }
+            }
+        }
+    }
+
+    fn sync_tabs_after_delete(&mut self, deleted: &Path) {
+        let del_clean = winutil::clean_path(deleted);
+        let mut to_close = Vec::new();
+        for (i, d) in self.docs.iter_mut().enumerate() {
+            let affected = d.path.as_ref().is_some_and(|p| {
+                crate::sidebar::files::paths_eq(p, &del_clean) || p.starts_with(&del_clean)
+            });
+            if affected {
+                if d.dirty {
+                    d.path = None;
+                } else {
+                    to_close.push(i);
+                }
+            }
+        }
+        for idx in to_close.into_iter().rev() {
+            self.docs.remove(idx);
+            if self.docs.is_empty() {
+                self.docs.push(Document::new_empty());
+                self.active = 0;
+            } else if self.active >= self.docs.len() {
+                self.active = self.docs.len() - 1;
+            } else if idx < self.active {
+                self.active -= 1;
             }
         }
     }
@@ -714,6 +762,13 @@ impl MdApp {
 
             ui.menu_button("视图", |ui| {
                 for cmd in [Command::ViewEdit, Command::ViewSplit, Command::ViewPreview, Command::ToggleSourceMode] {
+                    if self.menu_btn(ui, cmd) {
+                        pending_cmd = Some(cmd);
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                for cmd in [Command::ToggleSidebar, Command::SidebarFiles, Command::SidebarArticles, Command::SidebarOutline] {
                     if self.menu_btn(ui, cmd) {
                         pending_cmd = Some(cmd);
                         ui.close();
@@ -1417,20 +1472,74 @@ impl eframe::App for MdApp {
             doc.stats.update_selection(&doc.text, doc.version, sel_bytes, stats_opts);
         }
 
-        if self.settings.mode == ViewMode::Edit {
+        if self.settings.mode == ViewMode::Edit || (self.settings.sidebar_open && self.settings.sidebar_tab == SidebarTab::Outline) {
             let dark = ui.visuals().dark_mode;
             let font_size = self.settings.preview_font_size;
             let line_height = self.settings.line_height;
             let para_spacing = self.settings.paragraph_spacing;
             let opts = self.parse_opts();
+            let immediate = self.settings.mode != ViewMode::Edit;
             let doc = self.doc_mut();
-            let pcfg = ParseConfig { dark, font_size, line_height, para_spacing, opts: &opts, immediate: false };
+            let pcfg = ParseConfig { dark, font_size, line_height, para_spacing, opts: &opts, immediate };
             doc.ensure_parsed(ctx, &pcfg);
         }
+
+        let effective_root = self
+            .settings
+            .workspace_folder
+            .clone()
+            .or_else(|| self.doc().base_dir().map(Path::to_path_buf));
+        self.sidebar.sync_root(ctx, effective_root.as_deref());
+        self.sidebar.poll_watchers(ctx);
 
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
         egui::Panel::top("tabs").show(ui, |ui| self.tab_bar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+
+        if self.settings.sidebar_open {
+            let active_path = self.doc().path.clone();
+            let doc_uid = self.doc().uid;
+            let top_byte = if self.settings.mode == ViewMode::Preview {
+                let top_idx = self.doc().preview.top_block_idx;
+                self.doc()
+                    .parsed
+                    .get()
+                    .and_then(|(d, _, _)| d.block_ranges.get(top_idx))
+                    .map(|r| r.start)
+                    .unwrap_or(0)
+            } else {
+                self.doc().editor_top_byte
+            };
+            let headings = self
+                .doc()
+                .parsed
+                .get()
+                .map(|(d, _, _)| d.headings.clone())
+                .unwrap_or_default();
+
+            if let Some(act) = self.sidebar.show(
+                ui,
+                ctx,
+                &mut self.settings.sidebar_tab,
+                active_path.as_deref(),
+                doc_uid,
+                &headings,
+                top_byte,
+            ) {
+                match act {
+                    SidebarAction::OpenFile(p) => self.open_file(p),
+                    SidebarAction::OpenFolder => self.run_command(ctx, Command::OpenFolder),
+                    SidebarAction::Renamed { old, new } => self.sync_tabs_after_rename(&old, &new),
+                    SidebarAction::Deleted(p) => self.sync_tabs_after_delete(&p),
+                    SidebarAction::JumpToOutline { anchor, byte_offset } => {
+                        let doc = self.doc_mut();
+                        doc.preview.scroll_to(anchor);
+                        doc.pending_selection = Some(byte_offset..byte_offset);
+                        doc.scroll_to_selection = true;
+                    }
+                }
+            }
+        }
 
         self.editor_rect = Rect::NOTHING;
         self.preview_rect = Rect::NOTHING;

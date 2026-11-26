@@ -11,6 +11,7 @@ mod keymap;
 mod markdown;
 mod preview;
 mod settings;
+mod sidebar;
 mod stats;
 mod tabs;
 mod winutil;

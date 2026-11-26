@@ -18,6 +18,7 @@ read-fonts = "0.41"
 regex = "1"
 # :emoji: 短码
 emojis = "0.9"
+notify = { version = "9", default-features = false }
 rfd = "0.18"
 serde = { version = "1", features = ["derive"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
