@@ -244,10 +244,4 @@ ThunderMD/
 
 ## 🤝 贡献
 
-欢迎通过 [Issue](https://github.com/czh26/ThunderMD/issues) 反馈问题或提出建议，也欢迎提交 Pull Request。提交代码前建议先运行：
-
-```powershell
-cargo fmt
-cargo clippy
-cargo test
-```
+欢迎通过 [Issue](https://github.com/czh26/ThunderMD/issues) 反馈问题或提出建议。
