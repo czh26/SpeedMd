@@ -6,7 +6,8 @@ use read_fonts::{
         name::{Name, NameId},
         os2::{Os2, SelectionFlags},
     },
-    FontData as RfFontData, FontRead,
+    types::GlyphId,
+    FontData as RfFontData, FontRead, FontRef, TableProvider,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
@@ -255,54 +256,316 @@ pub fn setup(ctx: &egui::Context) {
     apply_choice(ctx, None, &FontChoice::default());
 }
 
-fn read_font_blob(cache: &mut HashMap<PathBuf, Arc<Vec<u8>>>, path: &Path) -> Option<Arc<Vec<u8>>> {
-    if let Some(b) = cache.get(path) {
-        return Some(Arc::clone(b));
-    }
-    let bytes = std::fs::read(path).ok()?;
-    let arc = Arc::new(bytes);
-    cache.insert(path.to_path_buf(), Arc::clone(&arc));
-    Some(arc)
+const MAX_SYNC_BLOB_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug)]
+struct VerticalMetrics {
+    ascent_em: f32,
+    descent_em: f32,
+    gap_em: f32,
+    has_cjk: bool,
 }
 
-fn load_loc(
+impl VerticalMetrics {
+    /// epaint 将回退字体行高盒居中进主字体行高盒，主/辅字体的基线偏移由此中点因子决定。
+    fn mid_factor(self) -> f32 {
+        0.5 * (self.ascent_em + self.descent_em - self.gap_em)
+    }
+}
+
+/// 按 skrifa::metrics::Metrics 的优先级解析字体垂直度量及是否含常用汉字。
+fn read_vertical_metrics(bytes: &[u8], ttc_index: u32) -> Option<VerticalMetrics> {
+    let font = FontRef::from_index(bytes, ttc_index).ok()?;
+    let upem = font.head().ok()?.units_per_em() as f32;
+    if upem <= 0.0 {
+        return None;
+    }
+    let os2 = font.os2().ok();
+    let mut asc = 0.0_f32;
+    let mut desc = 0.0_f32;
+    let mut gap = 0.0_f32;
+    let mut used_typo = false;
+    if let Some(os2) = &os2
+        && os2.fs_selection().contains(SelectionFlags::USE_TYPO_METRICS)
+    {
+        asc = os2.s_typo_ascender() as f32;
+        desc = os2.s_typo_descender() as f32;
+        gap = os2.s_typo_line_gap() as f32;
+        used_typo = true;
+    }
+    if !used_typo {
+        if let Ok(hhea) = font.hhea() {
+            asc = hhea.ascender().to_i16() as f32;
+            desc = hhea.descender().to_i16() as f32;
+            gap = hhea.line_gap().to_i16() as f32;
+        }
+        if asc == 0.0
+            && desc == 0.0
+            && let Some(os2) = &os2
+        {
+            if os2.s_typo_ascender() != 0 || os2.s_typo_descender() != 0 {
+                asc = os2.s_typo_ascender() as f32;
+                desc = os2.s_typo_descender() as f32;
+                gap = os2.s_typo_line_gap() as f32;
+            } else {
+                asc = os2.us_win_ascent() as f32;
+                desc = -(os2.us_win_descent() as f32);
+            }
+        }
+    }
+    let has_cjk = font
+        .cmap()
+        .ok()
+        .and_then(|c| c.map_codepoint('中'))
+        .is_some_and(|gid| gid != GlyphId::NOTDEF);
+    Some(VerticalMetrics {
+        ascent_em: asc / upem,
+        descent_em: desc / upem,
+        gap_em: gap / upem,
+        has_cjk,
+    })
+}
+
+fn write_be_i16(buf: &mut [u8], off: usize, v: i16) {
+    buf[off..off + 2].copy_from_slice(&v.to_be_bytes());
+}
+
+/// 在内存副本中把非 CJK 主字体的 hhea / OS/2 typo 垂直度量对齐到目标 CJK 度量，
+/// 使 epaint 中英混排的基线与 logical_rect（背景块/光标/删除线）同步对齐。
+fn sync_vertical_metrics(blob: &[u8], ttc_index: u32, target: VerticalMetrics) -> Option<Vec<u8>> {
+    if blob.len() > MAX_SYNC_BLOB_BYTES || blob.len() < 12 {
+        return None;
+    }
+    if FontRef::from_index(blob, ttc_index).ok()?.mvar().is_ok() {
+        return None;
+    }
+
+    let face_offset = if &blob[0..4] == b"ttcf" {
+        let num_fonts = read_be_u32(blob, 8)?;
+        if ttc_index >= num_fonts {
+            return None;
+        }
+        read_be_u32(blob, 12 + ttc_index as usize * 4)? as usize
+    } else if ttc_index == 0 && matches!(&blob[0..4], [0x00, 0x01, 0x00, 0x00] | b"OTTO" | b"true") {
+        0
+    } else {
+        return None;
+    };
+
+    let num_tables = read_be_u16(blob, face_offset.checked_add(4)?)? as usize;
+    if !(1..=256).contains(&num_tables) {
+        return None;
+    }
+    let dir_start = face_offset.checked_add(12)?;
+    let dir_end = dir_start.checked_add(num_tables * 16)?;
+    let dir = blob.get(dir_start..dir_end)?;
+
+    let mut head_rec: Option<(usize, usize)> = None;
+    let mut hhea_rec: Option<(usize, usize)> = None;
+    let mut os2_rec: Option<(usize, usize)> = None;
+    for chunk in dir.as_chunks::<16>().0 {
+        let tag = &chunk[0..4];
+        let off = read_be_u32(chunk, 8)? as usize;
+        let len = read_be_u32(chunk, 12)? as usize;
+        if off.checked_add(len).is_none_or(|end| end > blob.len()) {
+            continue;
+        }
+        match tag {
+            b"head" => head_rec = Some((off, len)),
+            b"hhea" => hhea_rec = Some((off, len)),
+            b"OS/2" => os2_rec = Some((off, len)),
+            _ => {}
+        }
+    }
+
+    let (head_off, head_len) = head_rec?;
+    let (hhea_off, hhea_len) = hhea_rec?;
+    if head_len < 20 || hhea_len < 10 {
+        return None;
+    }
+    let upem = read_be_u16(blob, head_off + 18)?;
+    if upem < 64 {
+        return None;
+    }
+
+    let new_asc = (target.ascent_em * upem as f32).round().clamp(-32000.0, 32000.0) as i16;
+    let new_desc = (target.descent_em * upem as f32).round().clamp(-32000.0, 32000.0) as i16;
+    let new_gap = (target.gap_em * upem as f32).round().clamp(0.0, 32000.0) as i16;
+
+    let mut out = blob.to_vec();
+    write_be_i16(&mut out, hhea_off + 4, new_asc);
+    write_be_i16(&mut out, hhea_off + 6, new_desc);
+    write_be_i16(&mut out, hhea_off + 8, new_gap);
+    if let Some((os2_off, os2_len)) = os2_rec
+        && os2_len >= 74
+    {
+        write_be_i16(&mut out, os2_off + 68, new_asc);
+        write_be_i16(&mut out, os2_off + 70, new_desc);
+        write_be_i16(&mut out, os2_off + 72, new_gap);
+    }
+
+    FontRef::from_index(&out, ttc_index).is_ok().then_some(out)
+}
+
+#[derive(Default)]
+struct BlobCache {
+    raw: HashMap<PathBuf, Arc<Vec<u8>>>,
+    synced: HashMap<(PathBuf, u32), Arc<Vec<u8>>>,
+}
+
+impl BlobCache {
+    fn read_raw(&mut self, path: &Path) -> Option<Arc<Vec<u8>>> {
+        if let Some(b) = self.raw.get(path) {
+            return Some(Arc::clone(b));
+        }
+        let bytes = std::fs::read(path).ok()?;
+        let arc = Arc::new(bytes);
+        self.raw.insert(path.to_path_buf(), Arc::clone(&arc));
+        Some(arc)
+    }
+
+    fn resolve_blob(
+        &mut self,
+        loc: &FontFaceLoc,
+        sync_target: Option<VerticalMetrics>,
+    ) -> Option<(Arc<Vec<u8>>, Option<VerticalMetrics>)> {
+        let raw = self.read_raw(&loc.path)?;
+        let orig_m = read_vertical_metrics(&raw, loc.ttc_index);
+        let should_sync = sync_target.filter(|cm| {
+            orig_m.is_some_and(|om| !om.has_cjk && (om.mid_factor() - cm.mid_factor()).abs() > 0.02)
+        });
+        if let Some(cm) = should_sync {
+            let key = (loc.path.clone(), loc.ttc_index);
+            if let Some(cached) = self.synced.get(&key) {
+                let eff_m = read_vertical_metrics(cached, loc.ttc_index).or(orig_m);
+                return Some((Arc::clone(cached), eff_m));
+            }
+            if let Some(patched) = sync_vertical_metrics(&raw, loc.ttc_index, cm) {
+                let arc = Arc::new(patched);
+                let eff_m = read_vertical_metrics(&arc, loc.ttc_index).or(orig_m);
+                self.synced.insert(key, Arc::clone(&arc));
+                return Some((arc, eff_m));
+            }
+        }
+        Some((raw, orig_m))
+    }
+}
+
+fn register_font(
     fonts: &mut FontDefinitions,
-    cache: &mut HashMap<PathBuf, Arc<Vec<u8>>>,
     name: &str,
-    loc: &FontFaceLoc,
+    blob: Arc<Vec<u8>>,
+    ttc_index: u32,
     tweak: Option<&FontTweak>,
-) -> Option<String> {
-    let blob = read_font_blob(cache, &loc.path)?;
-    let mut fd = FontData::from_blob(blob, loc.ttc_index);
+) -> String {
+    let mut fd = FontData::from_blob(blob, ttc_index);
     if let Some(tw) = tweak {
         fd = fd.tweak(tw.clone());
     }
     fonts.font_data.insert(name.into(), Arc::new(fd));
-    Some(name.to_string())
+    name.to_string()
+}
+
+fn load_default_loc(
+    caches: &mut BlobCache,
+    dir: &Path,
+    files: &[&str],
+) -> Option<(FontFaceLoc, Arc<Vec<u8>>, Option<VerticalMetrics>)> {
+    for f in files {
+        let loc = FontFaceLoc { path: dir.join(f), ttc_index: 0 };
+        if let Some((blob, m)) = caches.resolve_blob(&loc, None) {
+            return Some((loc, blob, m));
+        }
+    }
+    None
 }
 
 fn load_default(
     fonts: &mut FontDefinitions,
-    cache: &mut HashMap<PathBuf, Arc<Vec<u8>>>,
+    caches: &mut BlobCache,
     dir: &Path,
     name: &str,
     files: &[&str],
-    tweak: Option<&FontTweak>,
-) -> Option<String> {
+    sync_target: Option<VerticalMetrics>,
+) -> (Option<String>, Option<VerticalMetrics>) {
     for f in files {
         let loc = FontFaceLoc { path: dir.join(f), ttc_index: 0 };
-        if let Some(n) = load_loc(fonts, cache, name, &loc, tweak) {
-            return Some(n);
+        if let Some((blob, m)) = caches.resolve_blob(&loc, sync_target) {
+            return (Some(register_font(fonts, name, blob, loc.ttc_index, None)), m);
+        }
+    }
+    (None, None)
+}
+
+fn resolve_role_loc(
+    custom: Option<&FontFamilyInfo>,
+    use_bold: bool,
+    dir: &Path,
+    default_files: &[&str],
+) -> Option<(FontFaceLoc, bool)> {
+    if let Some(info) = custom
+        && let Some(loc) = if use_bold {
+            info.bold.as_ref()
+        } else {
+            info.regular.as_ref().or(info.bold.as_ref())
+        }
+    {
+        return Some((loc.clone(), true));
+    }
+    for f in default_files {
+        let loc = FontFaceLoc { path: dir.join(f), ttc_index: 0 };
+        if loc.path.is_file() {
+            return Some((loc, false));
         }
     }
     None
+}
+
+fn load_primary(
+    fonts: &mut FontDefinitions,
+    caches: &mut BlobCache,
+    custom_name: &str,
+    default_name: &str,
+    loc_is_custom: Option<(FontFaceLoc, bool)>,
+    sync_target: Option<VerticalMetrics>,
+) -> (Option<String>, Option<VerticalMetrics>) {
+    let Some((loc, is_custom)) = loc_is_custom else {
+        return (None, None);
+    };
+    let Some((blob, m)) = caches.resolve_blob(&loc, sync_target) else {
+        return (None, None);
+    };
+    let name = if is_custom { custom_name } else { default_name };
+    (Some(register_font(fonts, name, blob, loc.ttc_index, None)), m)
+}
+
+fn cjk_for_mid(
+    fonts: &mut FontDefinitions,
+    role_name: &str,
+    primary_metrics: Option<VerticalMetrics>,
+    target_mid: Option<f32>,
+    cjk_name: &Option<String>,
+    cjk_blob: Option<&(Arc<Vec<u8>>, u32)>,
+    cjk_metrics: Option<VerticalMetrics>,
+) -> Option<String> {
+    let base = cjk_name.clone()?;
+    if let (Some(pm), Some(tmid), Some((blob, idx)), Some(cm)) = (primary_metrics, target_mid, cjk_blob, cjk_metrics)
+        && !pm.has_cjk
+    {
+        let delta = tmid - cm.mid_factor();
+        if delta.abs() > 0.015 {
+            let tw = FontTweak { y_offset_factor: delta.clamp(-0.4, 0.4), ..Default::default() };
+            return Some(register_font(fonts, role_name, Arc::clone(blob), *idx, Some(&tw)));
+        }
+    }
+    Some(base)
 }
 
 pub fn apply_choice(ctx: &egui::Context, catalog: Option<&FontCatalog>, choice: &FontChoice) {
     let win_dir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
     let dir = PathBuf::from(win_dir).join("Fonts");
     let mut fonts = FontDefinitions::default();
-    let mut cache: HashMap<PathBuf, Arc<Vec<u8>>> = HashMap::new();
+    let mut caches = BlobCache::default();
 
     let custom_preview = (!choice.preview.is_empty())
         .then(|| catalog.and_then(|c| c.families.get(&choice.preview)))
@@ -314,49 +577,94 @@ pub fn apply_choice(ctx: &egui::Context, catalog: Option<&FontCatalog>, choice: 
         .then(|| catalog.and_then(|c| c.families.get(&choice.code)))
         .flatten();
 
-    let ui_regular = custom_preview
-        .and_then(|info| info.regular.as_ref().or(info.bold.as_ref()))
-        .and_then(|loc| load_loc(&mut fonts, &mut cache, "ui-regular", loc, None))
-        .or_else(|| load_default(&mut fonts, &mut cache, &dir, "segoe", &["segoeui.ttf"], None));
-
-    let ui_bold = custom_preview
-        .and_then(|info| info.bold.as_ref())
-        .and_then(|loc| load_loc(&mut fonts, &mut cache, "ui-bold", loc, None))
-        .or_else(|| load_default(&mut fonts, &mut cache, &dir, "segoe-bold", &["segoeuib.ttf"], None));
-
-    let cjk = load_default(
+    let (cjk, cjk_blob, cjk_metrics) = if let Some((loc, blob, m)) =
+        load_default_loc(&mut caches, &dir, &["msyh.ttc", "msyh.ttf", "Deng.ttf", "simhei.ttf", "simsun.ttc"])
+    {
+        let name = register_font(&mut fonts, "cjk", Arc::clone(&blob), loc.ttc_index, None);
+        (Some(name), Some((blob, loc.ttc_index)), m)
+    } else {
+        (None, None, None)
+    };
+    let (cjk_bold, _) = load_default(
         &mut fonts,
-        &mut cache,
-        &dir,
-        "cjk",
-        &["msyh.ttc", "msyh.ttf", "Deng.ttf", "simhei.ttf", "simsun.ttc"],
-        None,
-    );
-    let cjk_bold = load_default(
-        &mut fonts,
-        &mut cache,
+        &mut caches,
         &dir,
         "cjk-bold",
         &["msyhbd.ttc", "msyhbd.ttf", "Dengb.ttf", "simhei.ttf"],
         None,
     );
-    let symbol = load_default(&mut fonts, &mut cache, &dir, "symbol", &["seguisym.ttf"], None);
+    let (symbol, _) = load_default(&mut fonts, &mut caches, &dir, "symbol", &["seguisym.ttf"], None);
 
-    let mono_code = custom_code
-        .and_then(|info| info.regular.as_ref().or(info.bold.as_ref()))
-        .and_then(|loc| load_loc(&mut fonts, &mut cache, "code-mono", loc, None))
-        .or_else(|| load_default(&mut fonts, &mut cache, &dir, "consolas", &["consola.ttf"], None));
+    let ui_reg_loc = resolve_role_loc(custom_preview, false, &dir, &["segoeui.ttf"]);
+    let ui_reg_sync = if ui_reg_loc.as_ref().is_some_and(|(_, c)| *c) { cjk_metrics } else { None };
+    let (ui_regular, ui_eff_m) =
+        load_primary(&mut fonts, &mut caches, "ui-regular", "segoe", ui_reg_loc, ui_reg_sync);
 
-    let inline_tweak = FontTweak { y_offset_factor: 0.25, ..Default::default() };
-    let code_inline = custom_code
-        .and_then(|info| info.regular.as_ref().or(info.bold.as_ref()))
-        .and_then(|loc| load_loc(&mut fonts, &mut cache, "code-inline", loc, Some(&inline_tweak)))
-        .or_else(|| load_default(&mut fonts, &mut cache, &dir, "consolas-inline", &["consola.ttf"], Some(&inline_tweak)));
+    let ui_bold_loc = resolve_role_loc(custom_preview, true, &dir, &["segoeuib.ttf"]);
+    let ui_bold_sync = if ui_bold_loc.as_ref().is_some_and(|(_, c)| *c) { cjk_metrics } else { None };
+    let (ui_bold, _) = load_primary(&mut fonts, &mut caches, "ui-bold", "segoe-bold", ui_bold_loc, ui_bold_sync);
 
-    let editor_font = custom_editor
-        .and_then(|info| info.regular.as_ref().or(info.bold.as_ref()))
-        .and_then(|loc| load_loc(&mut fonts, &mut cache, "editor-font", loc, None))
-        .or_else(|| load_default(&mut fonts, &mut cache, &dir, "consolas-editor", &["consola.ttf"], None));
+    let code_loc = resolve_role_loc(custom_code, false, &dir, &["consola.ttf"]);
+    let (mono_code, mono_eff_m) =
+        load_primary(&mut fonts, &mut caches, "code-mono", "consolas", code_loc.clone(), cjk_metrics);
+
+    let (code_inline, code_post_m, applied_inline_delta) =
+        if let Some((loc, is_custom)) = code_loc
+            && let Some((blob, post_m)) = caches.resolve_blob(&loc, cjk_metrics)
+        {
+            let inline_delta = ui_eff_m
+                .zip(post_m)
+                .map(|(u, k)| (u.mid_factor() - k.mid_factor()).clamp(-0.35, 0.35))
+                .unwrap_or(0.0);
+            let tweak = (inline_delta.abs() > 0.025)
+                .then(|| FontTweak { y_offset_factor: inline_delta, ..Default::default() });
+            let applied = tweak.as_ref().map_or(0.0, |t| t.y_offset_factor);
+            let name = if is_custom { "code-inline" } else { "consolas-inline" };
+            (Some(register_font(&mut fonts, name, blob, loc.ttc_index, tweak.as_ref())), post_m, applied)
+        } else {
+            (None, None, 0.0)
+        };
+
+    let editor_loc = resolve_role_loc(custom_editor, false, &dir, &["consola.ttf"]);
+    let (editor_font, editor_eff_m) =
+        load_primary(&mut fonts, &mut caches, "editor-font", "consolas-editor", editor_loc, cjk_metrics);
+
+    let cjk_prop = cjk_for_mid(
+        &mut fonts,
+        "cjk-prop",
+        ui_eff_m,
+        ui_eff_m.map(VerticalMetrics::mid_factor),
+        &cjk,
+        cjk_blob.as_ref(),
+        cjk_metrics,
+    );
+    let cjk_mono = cjk_for_mid(
+        &mut fonts,
+        "cjk-mono",
+        mono_eff_m,
+        mono_eff_m.map(VerticalMetrics::mid_factor),
+        &cjk,
+        cjk_blob.as_ref(),
+        cjk_metrics,
+    );
+    let cjk_editor = cjk_for_mid(
+        &mut fonts,
+        "cjk-editor",
+        editor_eff_m,
+        editor_eff_m.map(VerticalMetrics::mid_factor),
+        &cjk,
+        cjk_blob.as_ref(),
+        cjk_metrics,
+    );
+    let cjk_inline = cjk_for_mid(
+        &mut fonts,
+        "cjk-inline",
+        code_post_m,
+        code_post_m.map(|m| m.mid_factor() + applied_inline_delta),
+        &cjk,
+        cjk_blob.as_ref(),
+        cjk_metrics,
+    );
 
     let defaults_prop = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     let defaults_mono = fonts.families.get(&FontFamily::Monospace).cloned().unwrap_or_default();
@@ -374,19 +682,11 @@ pub fn apply_choice(ctx: &egui::Context, catalog: Option<&FontCatalog>, choice: 
         v
     };
 
-    let prop = build(&[&ui_regular, &cjk], &defaults_prop);
-    let bold = build(&[&ui_bold, &cjk_bold, &ui_regular, &cjk], &defaults_prop);
-    let mono_rest = {
-        let mut v = defaults_mono.clone();
-        if let Some(c) = &cjk {
-            let pos = 1.min(v.len());
-            v.insert(pos, c.clone());
-        }
-        v
-    };
-    let monospace = build(&[&mono_code], &mono_rest);
-    let editor_family = build(&[&editor_font], &mono_rest);
-    let code = build(&[&code_inline, &cjk], &defaults_mono);
+    let prop = build(&[&ui_regular, &cjk_prop], &defaults_prop);
+    let bold = build(&[&ui_bold, &cjk_bold, &ui_regular, &cjk_prop], &defaults_prop);
+    let monospace = build(&[&mono_code, &cjk_mono], &defaults_mono);
+    let editor_family = build(&[&editor_font, &cjk_editor], &defaults_mono);
+    let code = build(&[&code_inline, &cjk_inline], &defaults_mono);
 
     fonts.families.insert(FontFamily::Proportional, prop);
     fonts.families.insert(FontFamily::Name("bold".into()), bold);
@@ -401,11 +701,129 @@ pub fn apply_choice(ctx: &egui::Context, catalog: Option<&FontCatalog>, choice: 
 mod tests {
     use super::*;
 
+    fn win_font_bytes(file: &str) -> Vec<u8> {
+        let win_dir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
+        std::fs::read(PathBuf::from(win_dir).join("Fonts").join(file)).unwrap()
+    }
+
     #[test]
     fn scan_system_fonts_reads_windows_fonts_via_tables() {
         let cat = scan_system_fonts();
         // Windows 下应至少扫描到常用系统字体（如 Segoe UI / Consolas）
         assert!(!cat.families.is_empty());
         assert!(cat.families.values().all(|f| f.regular.is_some() || f.bold.is_some()));
+    }
+
+    #[test]
+    fn consolas_syncs_vertical_metrics_with_yahei() {
+        let consola = win_font_bytes("consola.ttf");
+        let msyh = win_font_bytes("msyh.ttc");
+        let consola_m = read_vertical_metrics(&consola, 0).expect("consola metrics");
+        let cjk_m = read_vertical_metrics(&msyh, 0).expect("msyh metrics");
+        assert!(!consola_m.has_cjk);
+        assert!(cjk_m.has_cjk);
+
+        let patched = sync_vertical_metrics(&consola, 0, cjk_m).expect("consola should sync");
+        let patched_m = read_vertical_metrics(&patched, 0).expect("patched metrics");
+        assert!(!patched_m.has_cjk);
+        assert!((patched_m.ascent_em - cjk_m.ascent_em).abs() < 1e-3);
+        assert!((patched_m.descent_em - cjk_m.descent_em).abs() < 1e-3);
+        assert!((patched_m.gap_em - cjk_m.gap_em).abs() < 1e-3);
+        assert!((patched_m.mid_factor() - cjk_m.mid_factor()).abs() < 1e-3);
+    }
+
+    fn assert_row_aligned(ctx: &egui::Context, family: FontFamily, check_mono: bool) {
+        let sample = "├── main.rs          入口: NativeOptions + run_native (约 40 行)";
+        let mut galley_opt = None;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let job = egui::text::LayoutJob::simple(
+                sample.to_string(),
+                egui::FontId::new(15.0, family.clone()),
+                egui::Color32::BLACK,
+                f32::INFINITY,
+            );
+            galley_opt = Some(ui.fonts_mut(|f| f.layout_job(job)));
+        });
+        out.textures_delta.clear();
+
+        let galley = galley_opt.unwrap();
+        assert_eq!(galley.rows.len(), 1);
+        let glyphs = &galley.rows[0].row.glyphs;
+        assert!(!glyphs.is_empty());
+
+        let (mut min_y, mut max_y) = (f32::INFINITY, f32::NEG_INFINITY);
+        let (mut min_top, mut max_top) = (f32::INFINITY, f32::NEG_INFINITY);
+        let (mut min_bot, mut max_bot) = (f32::INFINITY, f32::NEG_INFINITY);
+        for g in glyphs {
+            if g.chr == ' ' || g.uv_rect.is_nothing() {
+                continue;
+            }
+            let r = g.logical_rect();
+            min_y = min_y.min(g.pos.y);
+            max_y = max_y.max(g.pos.y);
+            min_top = min_top.min(r.top());
+            max_top = max_top.max(r.top());
+            min_bot = min_bot.min(r.bottom());
+            max_bot = max_bot.max(r.bottom());
+        }
+        assert!(max_y - min_y <= 0.5, "baseline mismatch in {family:?}: {min_y}..{max_y}");
+        assert!(max_top - min_top <= 0.5, "logical top mismatch in {family:?}: {min_top}..{max_top}");
+        assert!(max_bot - min_bot <= 0.5, "logical bottom mismatch in {family:?}: {min_bot}..{max_bot}");
+
+        if check_mono {
+            let w_i = glyphs.iter().find(|g| g.chr == 'i').unwrap().advance_width;
+            let w_m = glyphs.iter().find(|g| g.chr == 'm').unwrap().advance_width;
+            let w_sp = glyphs.iter().find(|g| g.chr == ' ').unwrap().advance_width;
+            assert!((w_i - w_m).abs() < 1e-3, "not monospace: i={w_i}, m={w_m}");
+            assert!((w_i - w_sp).abs() < 1e-3, "not monospace: i={w_i}, space={w_sp}");
+        }
+    }
+
+    #[test]
+    fn mixed_cjk_and_latin_share_baseline_and_logical_rect_in_egui() {
+        let ctx = egui::Context::default();
+        setup(&ctx);
+        for (fam, mono) in [
+            (FontFamily::Name("editor".into()), true),
+            (FontFamily::Monospace, true),
+            (FontFamily::Name("code".into()), true),
+        ] {
+            assert_row_aligned(&ctx, fam, mono);
+        }
+
+        let cat = scan_system_fonts();
+        if cat.families.contains_key("Cascadia Mono") {
+            let ctx2 = egui::Context::default();
+            let choice = FontChoice {
+                preview: String::new(),
+                editor: "Cascadia Mono".into(),
+                code: "Cascadia Mono".into(),
+            };
+            apply_choice(&ctx2, Some(&cat), &choice);
+            for fam in [
+                FontFamily::Name("editor".into()),
+                FontFamily::Monospace,
+                FontFamily::Name("code".into()),
+            ] {
+                assert_row_aligned(&ctx2, fam, true);
+            }
+        }
+
+        if cat.families.contains_key("Microsoft YaHei UI") {
+            let ctx3 = egui::Context::default();
+            let choice = FontChoice {
+                preview: String::new(),
+                editor: "Microsoft YaHei UI".into(),
+                code: "Microsoft YaHei UI".into(),
+            };
+            apply_choice(&ctx3, Some(&cat), &choice);
+            for fam in [
+                FontFamily::Name("editor".into()),
+                FontFamily::Monospace,
+                FontFamily::Name("code".into()),
+            ] {
+                assert_row_aligned(&ctx3, fam, false);
+            }
+        }
     }
 }
