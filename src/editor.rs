@@ -546,15 +546,28 @@ pub fn show(ui: &mut egui::Ui, doc: &mut Document, cfg: &EditorConfig) -> Option
 
     {
         let Document { text, hl, find, .. } = doc;
-        let overlay = find.open.then(|| FindOverlay {
-            matches: find.matches.as_slice(),
-            current: (!find.matches.is_empty()).then_some(find.current),
-            key: find.overlay_key,
+        let find_synced = find.open && find.is_synced_with(version) && !find.matches.is_empty();
+        let find_text_sig = find_synced.then(|| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(text.as_bytes(), &mut h);
+            (text.len(), std::hash::Hasher::finish(&h))
         });
 
         let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
-            let mut job =
-                hl.highlight(version, buf.as_str(), theme_id, &font_id, overlay.as_ref().map(|o| FindOverlay { ..*o }));
+            let s = buf.as_str();
+            let overlay = find_text_sig.and_then(|(orig_len, orig_hash)| {
+                if s.len() != orig_len {
+                    return None;
+                }
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                std::hash::Hash::hash(s.as_bytes(), &mut h);
+                (std::hash::Hasher::finish(&h) == orig_hash).then_some(FindOverlay {
+                    matches: find.matches.as_slice(),
+                    current: Some(find.current),
+                    key: find.overlay_key,
+                })
+            });
+            let mut job = hl.highlight(version, s, theme_id, &font_id, overlay);
             job.wrap.max_width = wrap_width;
             ui.fonts_mut(|f| f.layout_job(job))
         };
@@ -654,9 +667,13 @@ pub fn show(ui: &mut egui::Ui, doc: &mut Document, cfg: &EditorConfig) -> Option
 
     doc.editor_top_byte = top_byte;
     if changed {
+        let was_clean = !doc.dirty;
         doc.dirty = true;
         doc.bump_version();
         doc.find.invalidate();
+        if was_clean || doc.find.open {
+            ctx.request_repaint();
+        }
     }
 
     let mut command = None;
@@ -760,5 +777,171 @@ mod tests {
 
         let closed = "```rust\n\n```";
         assert!(fence_enter_patch(closed, 7..7).is_none());
+    }
+
+    fn collect_rects_and_texts<'a>(
+        shape: &'a egui::Shape,
+        rects: &mut Vec<&'a egui::epaint::RectShape>,
+        texts: &mut Vec<&'a egui::epaint::TextShape>,
+    ) {
+        match shape {
+            egui::Shape::Rect(r) => rects.push(r),
+            egui::Shape::Text(t) => texts.push(t),
+            egui::Shape::Vec(v) => {
+                for s in v {
+                    collect_rects_and_texts(s, rects, texts);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn typing_at_end_of_wrapped_line_never_jumps_cursor_to_next_line() {
+        let ctx = egui::Context::default();
+        crate::fonts::setup(&ctx);
+        crate::theme::apply(&ctx, crate::theme::ThemeId::ZenHorizon);
+        let spec = crate::theme::current(&ctx);
+
+        let initial = "## 贡献\n\n\
+            fjhoisafhiaofhioahfioahsiofhiffasfasfafsaffsafasuigiugyu8og8ygyo8ug8yog78yg87jorjpoasfujaopsfaspofjaspfsadspoadiposadioasdisaodisaodisapdosaidoasidpoasdiasoiopiio\
+            pppppppppppppppppppp\n\
+            欢迎通过 [Issue](https://github.com/czh26/ThunderMD/issues) 反馈问题\n";
+        let mut doc = Document::from_file("test.md".into(), initial.into());
+        let nl_byte = doc.text.find("\n欢迎通过").unwrap();
+        doc.pending_selection = Some(nl_byte..nl_byte);
+
+        let ed_id = editor_id(doc.uid);
+        ctx.memory_mut(|m| m.request_focus(ed_id));
+
+        let cfg = EditorConfig {
+            font_size: 16.0,
+            max_content_width: 0.0,
+            auto_pair: true,
+            auto_pair_in_code: true,
+            paste_html_as_md: false,
+            base_dir: None,
+        };
+
+        let run_frame = |doc: &mut Document, events: Vec<Event>| -> (f32, egui::Rect, Option<egui::Rect>) {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(480.0, 600.0))),
+                focused: true,
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    let _ = show(ui, doc, &cfg);
+                });
+            });
+            out.textures_delta.clear();
+
+            let mut rects = Vec::new();
+            let mut texts = Vec::new();
+            for cs in &out.shapes {
+                collect_rects_and_texts(&cs.shape, &mut rects, &mut texts);
+            }
+            let ed_text = texts
+                .iter()
+                .find(|t| t.galley.text().contains("欢迎通过"))
+                .expect("editor galley should be painted");
+            let huan_row = ed_text
+                .galley
+                .rows
+                .iter()
+                .find(|r| r.glyphs.iter().any(|g| g.chr == '欢'))
+                .expect("row containing '欢' should exist");
+            let huan_row_top = ed_text.pos.y + huan_row.pos.y;
+            let band = rects
+                .iter()
+                .find(|r| r.fill == spec.editor.current_line_bg)
+                .expect("current line highlight band should be painted")
+                .rect;
+            let ime_cursor = out.platform_output.ime.map(|ime| ime.cursor_rect);
+            (huan_row_top, band, ime_cursor)
+        };
+
+        // 第 0 帧完成聚焦与初始布局，后续每帧在行尾输入 'p' 并紧跟空闲帧验证不跳行
+        let (huan_top, band, ime) = run_frame(&mut doc, Vec::new());
+        assert!(band.center().y < huan_top, "initial frame band={band:?} huan_top={huan_top}");
+        if let Some(c) = ime {
+            assert!(c.center().y < huan_top, "initial frame ime={c:?} huan_top={huan_top}");
+        }
+
+        for step in 0..5 {
+            let (huan_top, band, ime) = run_frame(&mut doc, vec![Event::Text("p".into())]);
+            assert!(
+                band.center().y < huan_top && band.bottom() <= huan_top + 1.0,
+                "keystroke step {step} jumped to next line: band={band:?}, huan_top={huan_top}"
+            );
+            if let Some(c) = ime {
+                assert!(
+                    c.center().y < huan_top,
+                    "keystroke step {step} ime jumped to next line: ime={c:?}, huan_top={huan_top}"
+                );
+            }
+
+            let (huan_top_idle, band_idle, ime_idle) = run_frame(&mut doc, Vec::new());
+            assert!(
+                band_idle.center().y < huan_top_idle && band_idle.bottom() <= huan_top_idle + 1.0,
+                "idle step {step} drifted: band={band_idle:?}, huan_top={huan_top_idle}"
+            );
+            if let Some(c) = ime_idle {
+                assert!(c.center().y < huan_top_idle);
+            }
+        }
+
+        assert!(doc.text.contains("ppppppppppppppppppppppppp\n欢迎通过"));
+    }
+
+    #[test]
+    fn typing_before_cjk_with_open_find_bar_never_panics() {
+        let ctx = egui::Context::default();
+        crate::fonts::setup(&ctx);
+        crate::theme::apply(&ctx, crate::theme::ThemeId::ZenHorizon);
+
+        let initial = "pppp\n欢迎通过\n";
+        let mut doc = Document::from_file("find_test.md".into(), initial.into());
+        let nl_byte = doc.text.find("\n欢迎通过").unwrap();
+        doc.pending_selection = Some(nl_byte..nl_byte);
+        doc.find.open = true;
+        doc.find.query = "欢迎".into();
+        doc.find.ensure_updated(&ctx, &doc.text, doc.version, true);
+        let old_match = doc.find.matches[0].clone();
+
+        ctx.memory_mut(|m| m.request_focus(editor_id(doc.uid)));
+        let cfg = EditorConfig {
+            font_size: 16.0,
+            max_content_width: 0.0,
+            auto_pair: true,
+            auto_pair_in_code: true,
+            paste_html_as_md: false,
+            base_dir: None,
+        };
+
+        let run_step = |doc: &mut Document, events: Vec<Event>| {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(480.0, 400.0))),
+                focused: true,
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    let _ = show(ui, doc, &cfg);
+                });
+            });
+            out.textures_delta.clear();
+        };
+
+        run_step(&mut doc, Vec::new());
+        run_step(&mut doc, vec![Event::Text("p".into())]);
+        doc.find.ensure_updated(&ctx, &doc.text, doc.version, false);
+        run_step(&mut doc, Vec::new());
+
+        doc.find.ensure_updated(&ctx, &doc.text, doc.version, true);
+        assert_eq!(doc.text, "ppppp\n欢迎通过\n");
+        assert_eq!(doc.find.matches, vec![(old_match.start + 1)..(old_match.end + 1)]);
     }
 }

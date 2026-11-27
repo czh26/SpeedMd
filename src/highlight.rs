@@ -12,7 +12,9 @@ use std::ops::Range;
 const MAX_FIND_HIGHLIGHTS: usize = 10_000;
 
 pub struct Highlighter {
-    key: u64,
+    style_key: u64,
+    has_cached: bool,
+    text_gen: u64,
     job: LayoutJob,
     overlay_cache_key: u64,
     overlay_job: LayoutJob,
@@ -21,7 +23,9 @@ pub struct Highlighter {
 impl Default for Highlighter {
     fn default() -> Self {
         Self {
-            key: u64::MAX,
+            style_key: u64::MAX,
+            has_cached: false,
+            text_gen: 0,
             job: LayoutJob::default(),
             overlay_cache_key: u64::MAX,
             overlay_job: LayoutJob::default(),
@@ -36,31 +40,35 @@ pub struct FindOverlay<'a> {
 }
 
 impl Highlighter {
-    /// 返回高亮后的 LayoutJob；版本号/主题/字号不变时直接复用缓存，并叠加查找匹配背景色。
+    /// 返回高亮后的 LayoutJob；文本内容、主题与字体未变化时直接复用缓存，并叠加查找匹配背景色。
     pub fn highlight(
         &mut self,
-        version: u64,
+        _version: u64,
         text: &str,
         theme: ThemeId,
         font: &FontId,
         overlay: Option<FindOverlay<'_>>,
     ) -> LayoutJob {
         let mut h = DefaultHasher::new();
-        version.hash(&mut h);
         theme.hash(&mut h);
         font.size.to_bits().hash(&mut h);
         font.family.hash(&mut h);
-        let key = h.finish();
-        if key != self.key {
+        let style_key = h.finish();
+        let text_changed = !self.has_cached || self.job.text != text;
+        if text_changed || style_key != self.style_key {
             self.job = build(text, theme, font);
-            self.key = key;
+            self.style_key = style_key;
+            self.has_cached = true;
+            if text_changed {
+                self.text_gen = self.text_gen.wrapping_add(1);
+            }
             self.overlay_cache_key = u64::MAX;
         }
         let Some(ov) = overlay.filter(|o| !o.matches.is_empty()) else {
             return self.job.clone();
         };
         let mut oh = DefaultHasher::new();
-        (key, ov.key, ov.current).hash(&mut oh);
+        (self.style_key, self.text_gen, ov.key, ov.current).hash(&mut oh);
         let ok = oh.finish();
         if ok != self.overlay_cache_key {
             self.overlay_job = apply_find_overlay(&self.job, ov.matches, ov.current, theme);
@@ -82,6 +90,20 @@ pub fn apply_find_overlay(
     }
     let limit = matches.len().min(MAX_FIND_HIGHLIGHTS);
     let capped = &matches[..limit];
+
+    let text = base.text.as_str();
+    let mut prev_end = 0usize;
+    for m in capped {
+        if m.start < prev_end
+            || m.start >= m.end
+            || m.end > text.len()
+            || !text.is_char_boundary(m.start)
+            || !text.is_char_boundary(m.end)
+        {
+            return base.clone();
+        }
+        prev_end = m.end;
+    }
 
     let ed = &theme.spec().editor;
     let match_bg = ed.find_match_bg;
@@ -591,5 +613,67 @@ mod tests {
             spans.contains(&("___同样效果___", true, bold_col)),
             "missing full ___ span: {spans:?}"
         );
+    }
+
+    #[test]
+    fn rebuilds_on_mid_frame_text_mutation_and_reuses_after_version_bump() {
+        let mut hl = Highlighter::default();
+        let font = FontId::monospace(15.0);
+
+        let empty_job = hl.highlight(1, "", ThemeId::ZenHorizon, &font, None);
+        assert_eq!(empty_job.text, "");
+        assert_eq!(hl.text_gen, 1);
+
+        let before = "ppp\n欢迎通过";
+        let j1 = hl.highlight(1, before, ThemeId::ZenHorizon, &font, None);
+        assert_eq!(j1.text, before);
+        assert_eq!(hl.text_gen, 2);
+
+        // 模拟同一帧内 TextEdit 插入字符后再次调用 layouter，此时 doc.version 尚未自增
+        let after = "pppp\n欢迎通过";
+        let j2 = hl.highlight(1, after, ThemeId::ZenHorizon, &font, None);
+        assert_eq!(j2.text, after);
+        assert_eq!(hl.text_gen, 3);
+
+        // 下一帧 doc.version 自增后，文本未再变化，应直接复用缓存不再重建
+        let j3 = hl.highlight(2, after, ThemeId::ZenHorizon, &font, None);
+        assert_eq!(j3.text, after);
+        assert_eq!(hl.text_gen, 3);
+
+        // 同长度字符替换且 version 未变时也必须重建
+        let same_len_a = "pppa\n欢迎";
+        let _ = hl.highlight(2, same_len_a, ThemeId::ZenHorizon, &font, None);
+        assert_eq!(hl.text_gen, 4);
+        let same_len_b = "pppb\n欢迎";
+        let j4 = hl.highlight(2, same_len_b, ThemeId::ZenHorizon, &font, None);
+        assert_eq!(j4.text, same_len_b);
+        assert_eq!(hl.text_gen, 5);
+    }
+
+    #[test]
+    fn find_overlay_ignores_stale_mid_utf8_or_out_of_bounds_ranges() {
+        let mut hl = Highlighter::default();
+        let text = "pppp\n欢迎通过";
+        let base = hl.highlight(1, text, ThemeId::ZenHorizon, &FontId::monospace(15.0), None);
+
+        let cases: [&[Range<usize>]; 4] = [
+            std::slice::from_ref(&(6..9)),
+            std::slice::from_ref(&(0..999)),
+            &[4..8, 6..10],
+            std::slice::from_ref(&Range { start: 8, end: 5 }),
+        ];
+        for invalid in cases {
+            let job = apply_find_overlay(&base, invalid, Some(0), ThemeId::ZenHorizon);
+            assert_eq!(job.text, text);
+            let mut cursor = 0usize;
+            for sec in &job.sections {
+                assert_eq!(sec.byte_range.start.0, cursor);
+                assert!(sec.byte_range.start.0 <= sec.byte_range.end.0);
+                assert!(job.text.is_char_boundary(sec.byte_range.start.0));
+                assert!(job.text.is_char_boundary(sec.byte_range.end.0));
+                cursor = sec.byte_range.end.0;
+            }
+            assert_eq!(cursor, text.len());
+        }
     }
 }

@@ -45,6 +45,8 @@ struct Rcx<'a> {
     th: &'a Theme,
     doc: &'a Doc,
     doc_uid: u64,
+    block_idx: usize,
+    scroll_sub_idx: usize,
     scroll_to: &'a mut Option<String>,
     nav: &'a mut Option<String>,
     actions: &'a mut Actions,
@@ -56,6 +58,12 @@ struct Rcx<'a> {
 }
 
 impl Rcx<'_> {
+    fn next_scroll_id(&mut self, kind: &'static str) -> (&'static str, u64, usize, usize) {
+        let sub = self.scroll_sub_idx;
+        self.scroll_sub_idx += 1;
+        (kind, self.doc_uid, self.block_idx, sub)
+    }
+
     fn check_scroll(&mut self, ui: &egui::Ui, anchor: &str, rect: Rect) {
         if rect.is_positive() && self.scroll_to.as_deref() == Some(anchor) {
             ui.scroll_to_rect(rect, Some(Align::TOP));
@@ -173,6 +181,8 @@ impl PreviewState {
                                     th,
                                     doc,
                                     doc_uid: uid,
+                                    block_idx: 0,
+                                    scroll_sub_idx: 0,
                                     scroll_to,
                                     nav: &mut nav,
                                     actions: &mut actions,
@@ -195,6 +205,8 @@ impl PreviewState {
                                         continue;
                                     }
                                     let start = ui.cursor().top();
+                                    rcx.block_idx = i;
+                                    rcx.scroll_sub_idx = 0;
                                     render_block(ui, block, &mut rcx, i == 0);
                                     let end = ui.cursor().top();
                                     heights[i] = Some(end - start);
@@ -207,6 +219,8 @@ impl PreviewState {
                                         *scroll_to_block = None;
                                     }
                                 }
+                                rcx.block_idx = doc.blocks.len();
+                                rcx.scroll_sub_idx = 0;
                                 render_footnotes(ui, &mut rcx);
                                 // 完整渲染过一遍后，找不到的锚点 / 块直接丢弃
                                 *rcx.scroll_to = None;
@@ -243,6 +257,8 @@ pub fn render_doc_inline(
         th,
         doc,
         doc_uid: uid,
+        block_idx: 0,
+        scroll_sub_idx: 0,
         scroll_to,
         nav: &mut nav,
         actions: &mut actions,
@@ -252,7 +268,13 @@ pub fn render_doc_inline(
         align: None,
         allow_local_open: opts.allow_local_open,
     };
-    render_blocks(ui, &doc.blocks, &mut rcx);
+    for (i, b) in doc.blocks.iter().enumerate() {
+        rcx.block_idx = i;
+        rcx.scroll_sub_idx = 0;
+        render_block(ui, b, &mut rcx, i == 0);
+    }
+    rcx.block_idx = doc.blocks.len();
+    rcx.scroll_sub_idx = 0;
     render_footnotes(ui, &mut rcx);
     *rcx.scroll_to = None;
     if let Some(a) = nav {
@@ -296,7 +318,10 @@ fn render_block(ui: &mut egui::Ui, block: &Block, rcx: &mut Rcx, first: bool) {
         Block::Paragraph(inline) => {
             render_inline(ui, inline, rcx);
         }
-        Block::Code { lang, code } => render_code(ui, lang, code, th, rcx.code_line_numbers),
+        Block::Code { lang, code } => {
+            let scroll_id = rcx.next_scroll_id("code_scroll");
+            render_code(ui, lang, code, rcx.th, rcx.code_line_numbers, scroll_id);
+        }
         Block::Quote { kind, blocks } => {
             let (bar, title_col, title) = match kind {
                 Some(k) => {
@@ -477,7 +502,14 @@ pub fn is_supported_highlight_lang(lang: &str) -> bool {
     )
 }
 
-fn render_code(ui: &mut egui::Ui, lang: &str, code: &str, th: &Theme, line_numbers: bool) {
+fn render_code(
+    ui: &mut egui::Ui,
+    lang: &str,
+    code: &str,
+    th: &Theme,
+    line_numbers: bool,
+    scroll_id: (&'static str, u64, usize, usize),
+) {
     let spec = th.theme_id.spec();
     let code_size = th.size * 0.88;
     let line_h = th.size * 1.45;
@@ -507,7 +539,7 @@ fn render_code(ui: &mut egui::Ui, lang: &str, code: &str, th: &Theme, line_numbe
                     let needs_scroll = code_galley.size().x > ui.available_width() + 0.5;
                     let vis = theme::configure_horizontal_scroll(ui, needs_scroll);
                     egui::ScrollArea::horizontal()
-                        .id_salt(("code_scroll", code.as_ptr() as usize))
+                        .id_salt(scroll_id)
                         .scroll_bar_visibility(vis)
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
@@ -544,7 +576,7 @@ fn render_code(ui: &mut egui::Ui, lang: &str, code: &str, th: &Theme, line_numbe
 
     let r = resp.rect;
     let btn = Rect::from_min_size(pos2(r.right() - 30.0, r.top() + 5.0), vec2(24.0, 22.0));
-    let id = ui.scope_id().with(("copy", code.as_ptr() as usize));
+    let id = ui.scope_id().with(("copy", scroll_id));
     let b = ui.interact(btn, id, Sense::click());
     if b.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
@@ -871,11 +903,12 @@ fn render_table(ui: &mut egui::Ui, aligns: &[Alignment], head: &[Inline], rows: 
     }
     let total_w: f32 = widths.iter().map(|w| w + pad.x * 2.0).sum();
 
+    let scroll_id = rcx.next_scroll_id("table_scroll");
     ui.scope(|ui| {
         let needs_scroll = total_w > ui.available_width() + 0.5;
         let vis = theme::configure_horizontal_scroll(ui, needs_scroll);
         egui::ScrollArea::horizontal()
-            .id_salt(("table", head.as_ptr() as usize))
+            .id_salt(scroll_id)
             .scroll_bar_visibility(vis)
             .show(ui, |ui| {
                 let mut table_rect = Rect::NOTHING;
@@ -999,5 +1032,211 @@ fn render_footnotes(ui: &mut egui::Ui, rcx: &mut Rcx) {
             .response;
         rcx.check_scroll(ui, &format!("fn-{}", f.label), resp.rect);
         ui.add_space(size * 0.5);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::markdown::ParseOptions;
+
+    fn collect_clipped_rects_and_texts<'a>(
+        shape: &'a egui::Shape,
+        clip_rect: Rect,
+        rects: &mut Vec<(Rect, &'a egui::epaint::RectShape)>,
+        texts: &mut Vec<&'a egui::epaint::TextShape>,
+    ) {
+        match shape {
+            egui::Shape::Rect(r) => rects.push((clip_rect, r)),
+            egui::Shape::Text(t) => texts.push(t),
+            egui::Shape::Vec(v) => {
+                for s in v {
+                    collect_clipped_rects_and_texts(s, clip_rect, rects, texts);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn visible_h_scroll_handles(shapes: &[egui::epaint::ClippedShape]) -> Vec<Rect> {
+        let mut rects = Vec::new();
+        let mut texts = Vec::new();
+        for cs in shapes {
+            collect_clipped_rects_and_texts(&cs.shape, cs.clip_rect, &mut rects, &mut texts);
+        }
+        rects
+            .into_iter()
+            .filter_map(|(clip, r)| {
+                let is_h_handle = r.rect.width() >= 20.0
+                    && r.rect.height() >= 1.5
+                    && r.rect.height() <= 8.0
+                    && r.fill.a() > 0;
+                (is_h_handle && clip.is_positive() && clip.intersect(r.rect).is_positive()).then_some(r.rect)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn offscreen_wide_blocks_never_leak_horizontal_scrollbar_while_typing() {
+        let ctx = egui::Context::default();
+        crate::fonts::setup(&ctx);
+        crate::theme::apply(&ctx, ThemeId::ZenHorizon);
+
+        let mut body = String::new();
+        for i in 0..18 {
+            body.push_str(&format!(
+                "这是第 {i} 段普通正文，用来把后续较宽的表格与代码块完全推到首屏视口下方之外。\n\n"
+            ));
+        }
+        // 在 +600px 预渲染区及更下方分别放置超宽表格与超宽代码块
+        body.push_str("| 列1 very_long_header_alpha | 列2 very_long_header_beta | 列3 very_long_header_gamma |\n|---|---|---|\n| aaa | bbb | ccc |\n\n");
+        for i in 18..34 {
+            body.push_str(&format!("这是第 {i} 段间隔正文，确保下一处超宽内容远在视口底部之外。\n\n"));
+        }
+        body.push_str(
+            "| 远端列1 super_wide_column_alpha | 远端列2 super_wide_column_beta | 远端列3 super_wide_column_gamma |\n|---|---|---|\n| 111 | 222 | 333 |\n\n\
+             ```rust\nlet very_long_offscreen_code_line = \"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789\";\n```\n",
+        );
+
+        let th = Theme::from_theme(ThemeId::ZenHorizon, 16.0, 1.6, 0.75);
+        let opts = ParseOptions { sup_sub: false, front_matter: false };
+        let parsed1 = markdown::parse(&body, &th, &opts);
+        let mut edited = body;
+        let first_para_end = edited.find("\n\n").unwrap();
+        edited.insert(first_para_end, 'p');
+        let parsed2 = markdown::parse(&edited, &th, &opts);
+
+        let mut preview = PreviewState::default();
+        let preview_opts = PreviewOptions {
+            base_dir: None,
+            code_line_numbers: true,
+            max_content_width: 0.0,
+            allow_local_open: true,
+        };
+
+        let run = |preview: &mut PreviewState, doc: &Doc, doc_key: u64| {
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(460.0, 420.0))),
+                focused: true,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    let _ = preview.ui(ui, 1, doc, &th, doc_key, preview_opts);
+                });
+            });
+            out.textures_delta.clear();
+            visible_h_scroll_handles(&out.shapes)
+        };
+
+        for (step, (doc, key)) in [(&parsed1, 1), (&parsed1, 1), (&parsed2, 2), (&parsed2, 2)]
+            .into_iter()
+            .enumerate()
+        {
+            let handles = run(&mut preview, doc, key);
+            assert!(
+                handles.is_empty(),
+                "frame {step} (doc_key={key}) leaked offscreen horizontal scrollbar handles: {handles:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn visible_wide_table_and_code_preserve_horizontal_scroll_across_reparse() {
+        let ctx = egui::Context::default();
+        crate::fonts::setup(&ctx);
+        crate::theme::apply(&ctx, ThemeId::ZenHorizon);
+
+        let base = "| 列一 very_long_header_alpha | 列二 very_long_header_beta | 列三 very_long_header_gamma | 列四 very_long_header_delta |\n\
+                    |---|---|---|---|\n\
+                    | 单元格ALPHA_UNIQUE | 单元格BETA | 单元格GAMMA | 单元格DELTA |\n\n\
+                    ```rust\n\
+                    let CODE_UNIQUE_TOKEN = \"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789\";\n\
+                    ```\n\n\
+                    底部普通段落。\n";
+        let th = Theme::from_theme(ThemeId::ZenHorizon, 16.0, 1.6, 0.75);
+        let opts = ParseOptions { sup_sub: false, front_matter: false };
+        let parsed1 = markdown::parse(base, &th, &opts);
+        let edited = format!("{base}p");
+        let parsed2 = markdown::parse(&edited, &th, &opts);
+
+        let mut preview = PreviewState::default();
+        let preview_opts = PreviewOptions {
+            base_dir: None,
+            code_line_numbers: true,
+            max_content_width: 0.0,
+            allow_local_open: true,
+        };
+
+        let run = |preview: &mut PreviewState, doc: &Doc, doc_key: u64, events: Vec<egui::Event>| {
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(360.0, 500.0))),
+                focused: true,
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    let _ = preview.ui(ui, 7, doc, &th, doc_key, preview_opts);
+                });
+            });
+            out.textures_delta.clear();
+            let handles = visible_h_scroll_handles(&out.shapes);
+            let mut rects = Vec::new();
+            let mut texts = Vec::new();
+            for cs in &out.shapes {
+                collect_clipped_rects_and_texts(&cs.shape, cs.clip_rect, &mut rects, &mut texts);
+            }
+            let cell_pos = texts
+                .iter()
+                .find(|t| t.galley.text().contains("单元格ALPHA_UNIQUE"))
+                .expect("table cell should be painted")
+                .pos;
+            let code_pos = texts
+                .iter()
+                .find(|t| t.galley.text().contains("CODE_UNIQUE_TOKEN"))
+                .expect("code line should be painted")
+                .pos;
+            (handles, cell_pos, code_pos)
+        };
+
+        // 第 1 帧：确认可见的宽表格与宽代码块正常绘制横向滚动条滑块
+        let (handles1, cell1, code1) = run(&mut preview, &parsed1, 1, Vec::new());
+        assert!(handles1.len() >= 2, "expected visible horizontal scroll handles for table & code, got {handles1:?}");
+
+        let wheel_left = |pos: egui::Pos2| {
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: vec2(-80.0, 0.0),
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Wheel,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        };
+
+        // 第 2-3 帧：分别横向滚动表格和代码块，并等待平滑滚动动画完全收敛
+        let _ = run(&mut preview, &parsed1, 1, wheel_left(cell1 + vec2(40.0, 4.0)));
+        let _ = run(&mut preview, &parsed1, 1, wheel_left(code1 + vec2(40.0, 4.0)));
+        for _ in 0..15 {
+            let _ = run(&mut preview, &parsed1, 1, Vec::new());
+        }
+        let (_, cell_scrolled, code_scrolled) = run(&mut preview, &parsed1, 1, Vec::new());
+        assert!(cell_scrolled.x < cell1.x - 5.0, "table did not scroll horizontally: {cell1:?} -> {cell_scrolled:?}");
+        assert!(code_scrolled.x < code1.x - 5.0, "code block did not scroll horizontally: {code1:?} -> {code_scrolled:?}");
+
+        // 文档编辑后重新解析（Doc 处于全新堆地址、doc_key=2），横向滚动位置必须保持不重置
+        let (handles_after, cell_after, code_after) = run(&mut preview, &parsed2, 2, Vec::new());
+        assert!(handles_after.len() >= 2);
+        assert!(
+            (cell_after.x - cell_scrolled.x).abs() < 1.0,
+            "table horizontal scroll reset across reparse: before={cell_scrolled:?}, after={cell_after:?}"
+        );
+        assert!(
+            (code_after.x - code_scrolled.x).abs() < 1.0,
+            "code horizontal scroll reset across reparse: before={code_scrolled:?}, after={code_after:?}"
+        );
     }
 }

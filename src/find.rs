@@ -60,6 +60,10 @@ impl FindState {
         self.cached_key = None;
     }
 
+    pub fn is_synced_with(&self, doc_version: u64) -> bool {
+        self.cached_key.as_ref().is_some_and(|(v, _)| *v == doc_version)
+    }
+
     /// 根据文档版本号与防抖状态更新匹配结果；`immediate == true` 时立即重算。
     pub fn ensure_updated(&mut self, ctx: &egui::Context, text: &str, doc_version: u64, immediate: bool) {
         if !self.open {

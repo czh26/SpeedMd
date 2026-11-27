@@ -2292,6 +2292,17 @@ pub fn configure_horizontal_scroll(
     ui: &mut egui::Ui,
     needs_scroll: bool,
 ) -> egui::scroll_area::ScrollBarVisibility {
+    if needs_scroll {
+        // 防止嵌套在外层纵向 ScrollArea 内时，位于视口下方尚未滚入画面的超宽块
+        // 被 egui 将横向滚动条 max_cross 钳位到外层 clip_rect.bottom() 而悬空闪现于预览框底边：
+        let top_y = ui.cursor().top();
+        let clip = ui.clip_rect();
+        if top_y >= clip.max.y {
+            ui.set_clip_rect(Rect::NOTHING);
+        } else if clip.min.y < top_y {
+            ui.set_clip_rect(Rect::from_min_max(pos2(clip.min.x, top_y), clip.max));
+        }
+    }
     let scroll = &mut ui.spacing_mut().scroll;
     scroll.floating = true;
     scroll.bar_outer_margin = 0.0;
