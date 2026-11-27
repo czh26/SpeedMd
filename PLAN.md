@@ -1,4 +1,4 @@
-# MdPad 功能扩展实施计划（PLAN.md）
+# ThunderMD 功能扩展实施计划（PLAN.md）
 
 > 状态：**已确认（2026-11-26）**，全部按推荐方案执行，最终决定见第 4 节开头的「最终决定」。执行顺序：阶段 1 → 8。
 
@@ -398,3 +398,12 @@ cargo test                     # stats / keymap / find / textproc / html_inline 
   - `MDPAD_BENCH=typing`（`100,300` 字符、`200` 样本）：`cpu_ms` 平均 `6.37 ms`（P50 `6.08 ms`，P95 `9.09 ms`），`wall_ms` 平均 `16.64 ms`（P50 `16.67 ms`，P95 `17.30 ms`），与原基线（`6.46 ms` / `16.65 ms`）持平。
   - `cargo build --release` 零警告，`target/release/mdpad.exe` 体积为 `13,469,696` 字节（约 `12.85 MB`）。
 - **已知限制**：Windows 11 下鼠标悬停自定义「最大化」按钮不会弹出系统原生的 Snap Layouts（贴靠布局）浮层（因无边框客户端自绘按钮未向系统暴露 `WM_NCHITTEST -> HTMAXBUTTON` 热区）；`Win + ↑/↓/←/→` 快捷键贴靠与拖动窗口至屏幕边缘贴靠均正常可用。
+
+---
+
+## 12. 品牌重命名为 ThunderMD 与仓库迁移
+
+- **品牌与构建产物**：应用名称、顶栏字标、窗口标题后缀（`● 文件名 - ThunderMD`）、HTML 导出默认标题、快捷键导出默认文件名（`thundermd-shortcuts.json`）、内置语法说明书文案及内部资源 URI（`bytes://thundermd/*`）全面更新为 **ThunderMD** / **thundermd**；`Cargo.toml` 包名更新为 `thundermd`，Release 构建产物为 `target/release/thundermd.exe`。
+- **仓库迁移**：Git `origin` 远程地址更新为 `https://github.com/czh26/ThunderMD.git`，并在 `Cargo.toml` 补充 `repository = "https://github.com/czh26/ThunderMD"`。
+- **平滑兼容与窄窗适配**：新增 `winutil::app_env` / `app_env_os` 优先读取 `THUNDERMD_*` 并兼容回退 `MDPAD_*`；非自动化模式首次启动调用 `window_frame::migrate_legacy_storage_if_needed(APP_NAME, "MdPad")` 自动迁移既有 `app.ron` 与 `use_system_titlebar.flag`；顶栏 9 字母字标在 `< 620px` 窄宽下结合 `min_left_w = 136.0`、自适应字号与裁剪矩形，确保与 `≡` 按钮互不重叠。
+

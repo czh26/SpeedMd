@@ -1,8 +1,9 @@
 [package]
-name = "mdpad"
+name = "thundermd"
 version = "0.1.0"
 edition = "2024"
 description = "极速 Markdown 编辑器（Rust + egui）"
+repository = "https://github.com/czh26/ThunderMD"
 
 [dependencies]
 # 用 OpenGL(glow) 渲染：比 wgpu 启动更快、exe 更小

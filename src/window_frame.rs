@@ -57,9 +57,9 @@ pub struct TopBarLayout {
 /// 计算当前窗口宽度下侧边栏与左分色顶栏允许的有效宽度区间（宽窗口保持 170..=500，窄窗口下平滑让位给标签栏和右侧控件）。
 pub fn effective_sidebar_bounds(win_width: f32) -> (f32, f32) {
     if win_width < COMPACT_WIDTH_THRESHOLD {
-        // 480px 时：right≈230px，tabs+gap≈90px，剩余 160px 给左侧与侧栏
-        let max_w = (win_width - 230.0 - 90.0).clamp(124.0, SIDEBAR_MIN_W);
-        (124.0_f32.min(max_w), max_w)
+        // 480px 时：right≈230px，tabs+gap≈90px，剩余 160px 给左侧与侧栏（至少 136px 容纳 ThunderMD 字标）
+        let max_w = (win_width - 230.0 - 90.0).clamp(136.0, SIDEBAR_MIN_W);
+        (136.0_f32.min(max_w), max_w)
     } else {
         let max_w = (win_width - 180.0).clamp(SIDEBAR_MIN_W, SIDEBAR_MAX_W);
         (SIDEBAR_MIN_W, max_w)
@@ -133,7 +133,7 @@ pub fn compute_top_bar_layout(
     let mode_rect = Rect::from_min_size(pos2(theme_btn_rect.left() - gap - mode_w, cy - TOP_PILL_H * 0.5), vec2(mode_w, TOP_PILL_H));
 
     // 侧栏打开时，左分色宽与左控件区保持完全同宽，防止窄窗标签落入深色左栏
-    let min_left_w = 124.0;
+    let min_left_w = 136.0;
     let min_tabs_w = 78.0;
     let tabs_margin = if compact { 5.0 } else { 10.0 };
     let max_left_w = (mode_rect.left() - tabs_margin - 5.0 - min_tabs_w - top_rect.left()).max(min_left_w);
@@ -454,8 +454,7 @@ pub fn paint_window_controls(
         }
 
         let hover_t = if test_hover == Some(b.kind) {
-            std::env::var("MDPAD_TEST_HOVER_T")
-                .ok()
+            crate::winutil::app_env("TEST_HOVER_T")
                 .and_then(|s| s.trim().parse::<f32>().ok())
                 .unwrap_or(1.0)
                 .clamp(0.0, 1.0)
@@ -556,13 +555,35 @@ pub fn handle_window_frame_chrome(
 
     if !dwm_rounded && !maximized {
         let spec = theme::current(ctx);
-        let painter = ctx.layer_painter(LayerId::new(Order::Foreground, egui::Id::unique("mdpad_win_border")));
+        let painter = ctx.layer_painter(LayerId::new(Order::Foreground, egui::Id::unique("thundermd_win_border")));
         painter.rect_stroke(
             win_rect.shrink(0.5),
             0.0,
             Stroke::new(1.0, spec.window_controls.window_border),
             StrokeKind::Middle,
         );
+    }
+}
+
+/// 若新版存储目录尚无 `app.ron` 而旧版（`MdPad`）存在配置，则自动迁移用户设置与标题栏开关。
+pub fn migrate_legacy_storage_if_needed(new_app_id: &str, old_app_id: &str) {
+    let Some(new_dir) = eframe::storage_dir(new_app_id) else { return };
+    if new_dir.join("app.ron").exists() {
+        return;
+    }
+    let Some(old_dir) = eframe::storage_dir(old_app_id) else { return };
+    if !old_dir.is_dir() {
+        return;
+    }
+    if std::fs::create_dir_all(&new_dir).is_err() {
+        return;
+    }
+    for file_name in ["app.ron", SYSTEM_TITLEBAR_FLAG_FILE] {
+        let src = old_dir.join(file_name);
+        let dst = new_dir.join(file_name);
+        if src.is_file() && !dst.exists() {
+            let _ = std::fs::copy(src, dst);
+        }
     }
 }
 
@@ -580,12 +601,14 @@ fn parse_use_system_flag_from_ron(ron: &str) -> Option<bool> {
     }
 }
 
-/// 在创建原生窗口前同步读取“使用系统标题栏”首选项；测试环境变量 `MDPAD_SYSTEM_TITLEBAR=1` 优先。
+/// 在创建原生窗口前同步读取“使用系统标题栏”首选项；测试环境变量 `THUNDERMD_SYSTEM_TITLEBAR=1` 优先。
 pub fn load_startup_use_system_titlebar(app_id: &str) -> bool {
-    if let Ok(v) = std::env::var("MDPAD_SYSTEM_TITLEBAR") {
+    if let Some(v) = crate::winutil::app_env("SYSTEM_TITLEBAR") {
         return matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes");
     }
-    if std::env::var_os("MDPAD_SCREENSHOT").is_some() || std::env::var("MDPAD_BENCH").as_deref() == Ok("typing") {
+    if crate::winutil::app_env_os("SCREENSHOT").is_some()
+        || crate::winutil::app_env("BENCH").as_deref() == Some("typing")
+    {
         return false;
     }
     if let Some(flag_p) = flag_file_path(app_id)

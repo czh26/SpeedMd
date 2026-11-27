@@ -1426,29 +1426,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mdpad"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "eframe",
- "egui",
- "egui_extras",
- "emojis",
- "encoding_rs",
- "htmd",
- "image",
- "notify",
- "pulldown-cmark",
- "raw-window-handle",
- "read-fonts",
- "regex",
- "rfd",
- "serde",
- "serde_json",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2795,6 +2772,29 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.10",
+]
+
+[[package]]
+name = "thundermd"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "eframe",
+ "egui",
+ "egui_extras",
+ "emojis",
+ "encoding_rs",
+ "htmd",
+ "image",
+ "notify",
+ "pulldown-cmark",
+ "raw-window-handle",
+ "read-fonts",
+ "regex",
+ "rfd",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -123,7 +123,7 @@ impl ShortcutsUiState {
                                 Ok(json) => {
                                     if let Some(p) = rfd::FileDialog::new()
                                         .add_filter("JSON", &["json"])
-                                        .set_file_name("mdpad-shortcuts.json")
+                                        .set_file_name("thundermd-shortcuts.json")
                                         .save_file()
                                         && let Err(e) = std::fs::write(&p, json.as_bytes())
                                     {

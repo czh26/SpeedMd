@@ -81,7 +81,7 @@ pub fn save_rgba_image(
 ) -> Result<(PathBuf, String), String> {
     let assets_dir = match base_dir {
         Some(dir) => dir.join("assets"),
-        None => std::env::temp_dir().join("mdpad_assets"),
+        None => std::env::temp_dir().join("thundermd_assets"),
     };
     std::fs::create_dir_all(&assets_dir).map_err(|e| format!("创建图片目录失败：{e}"))?;
 
@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn saves_rgba_image_to_assets_and_returns_relative_url() {
-        let tmp = std::env::temp_dir().join(format!("mdpad_clip_test_{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("thundermd_clip_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
 

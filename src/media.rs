@@ -231,7 +231,7 @@ pub fn render_card_opts(
                 && !poster.is_empty()
             {
                 let uri = if poster.starts_with("bytes://") {
-                    if poster.starts_with("bytes://mdpad/") {
+                    if poster.starts_with("bytes://thundermd/") {
                         crate::manual::ensure_demo_images(ui.ctx());
                     }
                     poster.clone()

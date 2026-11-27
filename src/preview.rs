@@ -723,7 +723,7 @@ fn render_image(ui: &mut egui::Ui, im: ImageRef<'_>, rcx: &mut Rcx) -> Rect {
     let ImageRef { url, alt, title, width, height, link } = im;
     let mut local_fallback = false;
     let uri = if url.starts_with("bytes://") {
-        if url.starts_with("bytes://mdpad/") {
+        if url.starts_with("bytes://thundermd/") {
             crate::manual::ensure_demo_images(ui.ctx());
         }
         url.to_string()
@@ -734,7 +734,7 @@ fn render_image(ui: &mut egui::Ui, im: ImageRef<'_>, rcx: &mut Rcx) -> Rect {
         if !rcx.allow_local_open && !p.is_file() {
             crate::manual::ensure_demo_images(ui.ctx());
             local_fallback = true;
-            "bytes://mdpad/local-demo.png".to_string()
+            "bytes://thundermd/local-demo.png".to_string()
         } else {
             file_uri(&p)
         }

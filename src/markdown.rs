@@ -2016,7 +2016,7 @@ mod tests {
 
     #[test]
     fn escaped_extensions_image_links_titles_and_toml_front_matter() {
-        let md = "+++\ntitle = \"TOML 测试\"\n[author]\nname = \"MdPad\"\n+++\n\n\\==非高亮== \\:smile: [链接](https://example.com \"提示标题\") [![alt](https://example.com/a.png \"图标题\")](https://rust-lang.org)\n";
+        let md = "+++\ntitle = \"TOML 测试\"\n[author]\nname = \"ThunderMD\"\n+++\n\n\\==非高亮== \\:smile: [链接](https://example.com \"提示标题\") [![alt](https://example.com/a.png \"图标题\")](https://rust-lang.org)\n";
         let th = Theme::from_theme(ThemeId::ZenHorizon, 16.0, 1.6, 0.75);
         let doc = parse(md, &th, &ParseOptions { sup_sub: true, front_matter: true });
         assert!(matches!(doc.blocks[0], Block::FrontMatter(_)));

@@ -1,4 +1,4 @@
-//! MdPad 顶层应用状态、布局与统一命令分发。
+//! ThunderMD 顶层应用状态、布局与统一命令分发。
 
 use crate::commands::Command;
 use crate::document::{Document, ParseConfig};
@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Instant;
 
-pub const APP_NAME: &str = "MdPad";
+pub const APP_NAME: &str = "ThunderMD";
 
 #[derive(Clone)]
 enum ConfirmAction {
@@ -106,8 +106,8 @@ pub struct MdApp {
 
 impl MdApp {
     pub fn new(cc: &eframe::CreationContext<'_>, use_system_titlebar: bool) -> Self {
-        let shot_path = std::env::var_os("MDPAD_SCREENSHOT").map(PathBuf::from);
-        let bench_typing = std::env::var("MDPAD_BENCH").as_deref() == Ok("typing");
+        let shot_path = winutil::app_env_os("SCREENSHOT").map(PathBuf::from);
+        let bench_typing = winutil::app_env("BENCH").as_deref() == Some("typing");
         let is_test = shot_path.is_some() || bench_typing;
         if is_test {
             cc.egui_ctx.data_mut(|d| d.clear());
@@ -120,8 +120,8 @@ impl MdApp {
             o.quit_shortcuts.clear();
         });
 
-        let bench_out = std::env::var_os("MDPAD_BENCH_OUT").map(PathBuf::from);
-        let test_cmds: Vec<String> = std::env::var("MDPAD_TEST_COMMANDS")
+        let bench_out = winutil::app_env_os("BENCH_OUT").map(PathBuf::from);
+        let test_cmds: Vec<String> = winutil::app_env("TEST_COMMANDS")
             .map(|s| s.split(';').map(str::trim).filter(|c| !c.is_empty()).map(str::to_string).collect())
             .unwrap_or_default();
 
@@ -131,23 +131,22 @@ impl MdApp {
         if is_test {
             settings = Settings::default();
             settings.use_system_titlebar = use_system_titlebar;
-            match std::env::var("MDPAD_MODE").as_deref() {
-                Ok("edit") => settings.mode = ViewMode::Edit,
-                Ok("preview") => settings.mode = ViewMode::Preview,
-                Ok("split") => settings.mode = ViewMode::Split,
+            match winutil::app_env("MODE").as_deref() {
+                Some("edit") => settings.mode = ViewMode::Edit,
+                Some("preview") => settings.mode = ViewMode::Preview,
+                Some("split") => settings.mode = ViewMode::Split,
                 _ if bench_typing => settings.mode = ViewMode::Edit,
                 _ => {}
             }
-            settings.sup_sub = std::env::var("MDPAD_SUPSUB").is_ok();
-            if let Ok(folder) = std::env::var("MDPAD_FOLDER") {
+            settings.sup_sub = winutil::app_env_os("SUPSUB").is_some();
+            if let Some(folder) = winutil::app_env("FOLDER") {
                 settings.workspace_folder = Some(winutil::clean_path(Path::new(&folder)));
             }
         }
 
-        let env_theme = std::env::var("MDPAD_THEME")
-            .ok()
+        let env_theme = winutil::app_env("THEME")
             .and_then(|s| ThemeId::from_env_str(&s))
-            .or_else(|| std::env::var("MDPAD_DARK").ok().map(|_| ThemeId::CarbonGold));
+            .or_else(|| winutil::app_env_os("DARK").map(|_| ThemeId::CarbonGold));
         if let Some(t) = env_theme {
             settings.theme = t;
         }
@@ -158,15 +157,15 @@ impl MdApp {
 
         let keymap = Keymap::from_overrides(&settings.keybindings);
         let dwm_rounded = if use_system_titlebar { true } else { winutil::try_enable_rounded_corners(cc) };
-        let test_hover_btn = std::env::var("MDPAD_TEST_HOVER").ok().and_then(|s| WindowControlBtn::from_env_str(&s));
-        let test_unfocused = std::env::var("MDPAD_TEST_UNFOCUSED").as_deref() == Ok("1");
+        let test_hover_btn = winutil::app_env("TEST_HOVER").and_then(|s| WindowControlBtn::from_env_str(&s));
+        let test_unfocused = winutil::app_env("TEST_UNFOCUSED").as_deref() == Some("1");
         let shot = shot_path.map(|path| ShotRunner { path, frames: 0, commands: test_cmds, ran_commands: false });
         let bench = bench_typing.then(|| BenchRunner::new(bench_out));
         let needs_custom_fonts = !settings.preview_font_family.is_empty()
             || !settings.editor_font_family.is_empty()
             || !settings.code_font_family.is_empty();
         let font_scan_rx = needs_custom_fonts.then(|| fonts::start_scan(cc.egui_ctx.clone()));
-        let stats_popup_open = std::env::var("MDPAD_STATS_POPUP").is_ok();
+        let stats_popup_open = winutil::app_env_os("STATS_POPUP").is_some();
 
         let mut app = Self {
             docs: Vec::new(),
@@ -251,27 +250,27 @@ impl MdApp {
             app.last_doc_uid = Some(app.doc().uid);
         }
 
-        if let Ok(anchor) = std::env::var("MDPAD_ANCHOR") {
+        if let Some(anchor) = winutil::app_env("ANCHOR") {
             app.docs[app.active].preview.scroll_to(anchor);
         }
-        if let Ok(q) = std::env::var("MDPAD_FIND_QUERY") {
+        if let Some(q) = winutil::app_env("FIND_QUERY") {
             let doc = &mut app.docs[app.active];
             doc.find.query = q;
             doc.find.open = true;
-            if std::env::var("MDPAD_FIND_REGEX").is_ok() {
+            if winutil::app_env_os("FIND_REGEX").is_some() {
                 doc.find.use_regex = true;
             }
-            if std::env::var("MDPAD_FIND_REPLACE").is_ok() {
+            if winutil::app_env_os("FIND_REPLACE").is_some() {
                 doc.find.show_replace = true;
             }
         }
-        if let Ok(q) = std::env::var("MDPAD_MANUAL_QUERY") {
+        if let Some(q) = winutil::app_env("MANUAL_QUERY") {
             app.manual.query = q;
         }
-        if let Ok(cat) = std::env::var("MDPAD_MANUAL_CATEGORY") {
+        if let Some(cat) = winutil::app_env("MANUAL_CATEGORY") {
             app.manual.scroll_to_category_name(&cat);
         }
-        if let Ok(entry) = std::env::var("MDPAD_MANUAL_ENTRY") {
+        if let Some(entry) = winutil::app_env("MANUAL_ENTRY") {
             app.manual.scroll_to_entry_id(&entry);
         }
         app
@@ -1000,13 +999,21 @@ impl MdApp {
             }
         }
 
-        // 左区：徽标 + MdPad 字标 + ≡ 菜单钮
+        // 左区：徽标 + ThunderMD 字标 + ≡ 菜单钮
         let left_fg = if split_left_active { spec.top_bar_left_fg } else { spec.text_fg };
         let left_hover = if split_left_active { spec.sidebar.hover_bg } else { spec.hover_bg };
 
         theme::paint_brand_badge(ui.painter(), layout.badge_rect, spec);
-        let wordmark_size = if layout.left_controls_rect.width() < 160.0 { 14.5 } else { 15.5 };
-        ui.painter().text(
+        let avail_wordmark_w = (layout.menu_btn_rect.left() - 5.0 - layout.wordmark_pos.x).max(0.0);
+        let wordmark_size = if avail_wordmark_w >= 105.0 {
+            15.5
+        } else if avail_wordmark_w >= 82.0 {
+            14.0
+        } else {
+            12.5
+        };
+        let wordmark_clip = Rect::from_min_max(top_rect.min, pos2(layout.menu_btn_rect.left() - 3.0, top_rect.max.y));
+        ui.painter().with_clip_rect(wordmark_clip).text(
             layout.wordmark_pos,
             Align2::LEFT_CENTER,
             APP_NAME,
@@ -2312,7 +2319,7 @@ fn format_bench_report(chars: usize, cpu: &[f64], wall: &[f64]) -> String {
     wall_s.sort_by(f64::total_cmp);
     let avg = |v: &[f64]| if v.is_empty() { 0.0 } else { v.iter().sum::<f64>() / v.len() as f64 };
     format!(
-        "MDPAD_BENCH=typing chars={} samples={}\ncpu_ms:  avg={:.2} p50={:.2} p95={:.2}\nwall_ms: avg={:.2} p50={:.2} p95={:.2}\n",
+        "THUNDERMD_BENCH=typing chars={} samples={}\ncpu_ms:  avg={:.2} p50={:.2} p95={:.2}\nwall_ms: avg={:.2} p50={:.2} p95={:.2}\n",
         chars,
         cpu.len(),
         avg(cpu),

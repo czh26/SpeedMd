@@ -1,4 +1,4 @@
-//! MdPad「速度与闪电」主题内核：统一空间骨架常量、5 套定稿主题色板与 egui Visuals 缓存。
+//! ThunderMD「速度与闪电」主题内核：统一空间骨架常量、5 套定稿主题色板与 egui Visuals 缓存。
 
 use eframe::egui::{
     self, pos2, vec2, Color32, CornerRadius, Mesh, Painter, Pos2, Rect, Shadow, Spacing, Stroke, Style, Visuals,
@@ -154,7 +154,7 @@ impl ThemeId {
         }
     }
 
-    /// 宽松解析主题名或编号（用于环境变量 `MDPAD_THEME` 与配置反序列化）。
+    /// 宽松解析主题名或编号（用于环境变量 `THUNDERMD_THEME` 与配置反序列化）。
     pub fn from_env_str(raw: &str) -> Option<Self> {
         let norm: String = raw
             .trim()
@@ -1906,7 +1906,7 @@ fn unified_spacing() -> Spacing {
     }
 }
 
-static THEME_CTX_KEY: LazyLock<egui::Id> = LazyLock::new(|| egui::Id::unique("mdpad_active_theme_id"));
+static THEME_CTX_KEY: LazyLock<egui::Id> = LazyLock::new(|| egui::Id::unique("thundermd_active_theme_id"));
 
 /// 将指定主题完整注入到 `egui::Context`（同时覆盖 Dark 与 Light 两套全局 Style，杜绝弹窗/菜单残留默认灰蓝）。
 pub fn apply(ctx: &egui::Context, id: ThemeId) {

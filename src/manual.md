@@ -1,5 +1,5 @@
 <!--
-MdPad 语法说明书数据文件（编译时通过 include_str!("manual.md") 嵌入程序，首次打开 F1 时解析）。
+ThunderMD 语法说明书数据文件（编译时通过 include_str!("manual.md") 嵌入程序，首次打开 F1 时解析）。
 
 ====================== 格式说明（新增条目只改本文件即可） ======================
 1. `# 分类名称`         定义一个一级分类（按文件出现顺序显示）。
@@ -7,7 +7,7 @@ MdPad 语法说明书数据文件（编译时通过 include_str!("manual.md") �
 3. 紧跟在 `##` 下方的可选元数据行（每行一个 `key: value`，顺序不限）：
    - `id:`        全局唯一标识符（仅英文/数字/连字符/下划线）
    - `keywords:`  逗号分隔的中英文检索词与同义词（辅助搜索）
-   - `tags:`      竖线 `|` 分隔的提醒标签（如：需在设置中开启 | MdPad 扩展语法，其他编辑器可能不支持 | HTML 写法）
+   - `tags:`      竖线 `|` 分隔的提醒标签（如：需在设置中开启 | ThunderMD 扩展语法，其他编辑器可能不支持 | HTML 写法）
    - `setting:`   关联设置项开关，可选 `sup_sub` 或 `front_matter`（卡片会显示实时开关按钮）
    - `mode:`      插入行为覆盖，可选 `inline`（光标处直接插入）或 `block`（必要时自动补齐前后空行）
    - `note:`      补充注意事项（显示在说明下方）
@@ -50,7 +50,7 @@ note: 写 `---` 分割线时若上方没有空行，会误把上一行文字变�
 ## 自定义标题锚点
 id: heading-custom-id
 keywords: 标题, 锚点, 自定义id, anchor, heading attributes, {#id}
-tags: MdPad 扩展语法，其他编辑器可能不支持
+tags: ThunderMD 扩展语法，其他编辑器可能不支持
 mode: block
 在标题末尾添加 `{#自定义id}`，即可用固定锚点名称做文内跳转。
 ~~~~markdown
@@ -150,7 +150,7 @@ note: 推荐始终写两个波浪线 `~~`，不受上标/下标设置影响。
 ## 文字高亮
 id: style-highlight
 keywords: 高亮, 荧光笔, 标记, highlight, mark
-tags: MdPad 扩展语法，其他编辑器可能不支持
+tags: ThunderMD 扩展语法，其他编辑器可能不支持
 mode: inline
 用成对的双等号 `==` 包裹文字，添加醒目的高亮底色。
 ~~~~markdown
@@ -160,7 +160,7 @@ mode: inline
 ## 上标
 id: style-superscript
 keywords: 上标, 幂, 平方, superscript, sup, ^
-tags: 需在设置中开启 | MdPad 扩展语法，其他编辑器可能不支持
+tags: 需在设置中开启 | ThunderMD 扩展语法，其他编辑器可能不支持
 setting: sup_sub
 mode: inline
 note: 支持在单词内直接书写，例如 `E=mc^2^`、`x^n^`。
@@ -172,7 +172,7 @@ note: 支持在单词内直接书写，例如 `E=mc^2^`、`x^n^`。
 ## 下标
 id: style-subscript
 keywords: 下标, 化学式, subscript, sub, ~
-tags: 需在设置中开启 | MdPad 扩展语法，其他编辑器可能不支持
+tags: 需在设置中开启 | ThunderMD 扩展语法，其他编辑器可能不支持
 setting: sup_sub
 mode: inline
 note: 开启此设置后，单个 `~` 表示下标，删除线请改用 `~~文字~~`。
@@ -296,7 +296,7 @@ mode: block
 ## 提示块：备注（NOTE）
 id: alert-note
 keywords: 提示块, 警告框, 备注, note, callout, alert, admonition
-tags: MdPad 扩展语法，其他编辑器可能不支持
+tags: ThunderMD 扩展语法，其他编辑器可能不支持
 mode: block
 GFM 提示块语法，在引用块首行写 `[!NOTE]` 展示蓝色信息提醒。
 ~~~~markdown
@@ -307,7 +307,7 @@ GFM 提示块语法，在引用块首行写 `[!NOTE]` 展示蓝色信息提醒�
 ## 提示块：提示（TIP）
 id: alert-tip
 keywords: 提示块, 技巧, 建议, tip, callout, alert
-tags: MdPad 扩展语法，其他编辑器可能不支持
+tags: ThunderMD 扩展语法，其他编辑器可能不支持
 mode: block
 在引用块首行写 `[!TIP]` 展示绿色实用技巧或最佳实践卡片。
 ~~~~markdown
@@ -318,7 +318,7 @@ mode: block
 ## 提示块：重要（IMPORTANT）
 id: alert-important
 keywords: 提示块, 重要, 关键, important, callout, alert
-tags: MdPad 扩展语法，其他编辑器可能不支持
+tags: ThunderMD 扩展语法，其他编辑器可能不支持
 mode: block
 在引用块首行写 `[!IMPORTANT]` 展示紫色重点强调卡片。
 ~~~~markdown
@@ -329,7 +329,7 @@ mode: block
 ## 提示块：警告（WARNING）
 id: alert-warning
 keywords: 提示块, 警告, 风险, warning, callout, alert
-tags: MdPad 扩展语法，其他编辑器可能不支持
+tags: ThunderMD 扩展语法，其他编辑器可能不支持
 mode: block
 在引用块首行写 `[!WARNING]` 展示琥珀色潜在风险提醒。
 ~~~~markdown
@@ -340,7 +340,7 @@ mode: block
 ## 提示块：注意（CAUTION）
 id: alert-caution
 keywords: 提示块, 注意, 危险, 破坏性操作, caution, alert
-tags: MdPad 扩展语法，其他编辑器可能不支持
+tags: ThunderMD 扩展语法，其他编辑器可能不支持
 mode: block
 在引用块首行写 `[!CAUTION]` 展示红色高危或不可逆操作提醒。
 ~~~~markdown
@@ -391,7 +391,7 @@ mode: block
 ~~~~markdown
 ~~~markdown
 ```python
-print("Hello MdPad")
+print("Hello ThunderMD")
 ```
 ~~~
 ~~~~
@@ -426,7 +426,7 @@ keywords: 链接, 悬停提示, 标题, link title
 mode: inline
 在网址后用双引号附带说明文字，鼠标悬停在链接上时会显示该标题。
 ~~~~markdown
-前往 [MdPad 代码仓库](https://github.com "查看源码与说明")。
+前往 [ThunderMD 代码仓库](https://github.com/czh26/ThunderMD "查看源码与说明")。
 ~~~~
 
 ## 引用式链接
@@ -454,7 +454,7 @@ mode: inline
 ## GFM 裸网址自动识别
 id: link-gfm-bare-url
 keywords: 裸链接, 自动链接, 网址, bare url, autolink, gfm
-tags: MdPad 扩展语法，其他编辑器可能不支持
+tags: ThunderMD 扩展语法，其他编辑器可能不支持
 mode: inline
 直接写出以 `https://`、`http://` 或 `www.` 开头的网址，无需方括号也会自动转为可点击链接。
 ~~~~markdown
@@ -492,7 +492,7 @@ mode: block
 note: 本例使用内置演示资源保证离线预览；实际写作时请换成 `https://...` 网络图或本地路径。
 使用 `![替代文本](图片地址)` 插入图片，替代文本用于图片未加载时的悬停说明。
 ~~~~markdown
-![山川风景示意图](bytes://mdpad/landscape.png)
+![山川风景示意图](bytes://thundermd/landscape.png)
 ~~~~
 
 ## 带标题的图片
@@ -501,7 +501,7 @@ keywords: 图片, 图片标题, 悬停提示, image title
 mode: block
 在图片地址后用双引号写标题，鼠标悬停在图片上时会显示提示。
 ~~~~markdown
-![功能徽章图](bytes://mdpad/badge.png "鼠标悬停时显示的图片标题")
+![功能徽章图](bytes://thundermd/badge.png "鼠标悬停时显示的图片标题")
 ~~~~
 
 ## 引用式图片
@@ -512,7 +512,7 @@ mode: block
 ~~~~markdown
 ![展示图][demo-pic]
 
-[demo-pic]: bytes://mdpad/badge.png "引用式图片演示"
+[demo-pic]: bytes://thundermd/badge.png "引用式图片演示"
 ~~~~
 
 ## 本地相对路径图片
@@ -533,7 +533,7 @@ mode: inline
 note: 仅写 `width` 或 `height` 其中一个属性时，按原图纵横比等比缩放；同时指定两者则按指定像素拉伸。
 标准 Markdown 不支持设置宽高，可用 HTML `<img>` 标签精确控制显示尺寸。
 ~~~~markdown
-<img src="bytes://mdpad/badge.png" width="120" height="72" alt="自定义尺寸示例" title="固定宽高 120x72">
+<img src="bytes://thundermd/badge.png" width="120" height="72" alt="自定义尺寸示例" title="固定宽高 120x72">
 ~~~~
 
 ## 图片链接（点击图片跳转）
@@ -542,7 +542,7 @@ keywords: 图片链接, 点击图片, 徽章, clickable image, badge
 mode: block
 用链接语法 `[...](跳转地址)` 包裹图片语法 `![...](图片地址)`，点击图片即可打开网页。
 ~~~~markdown
-[![点击访问 Rust 官网](bytes://mdpad/badge.png "前往 Rust 官网")](https://www.rust-lang.org)
+[![点击访问 Rust 官网](bytes://thundermd/badge.png "前往 Rust 官网")](https://www.rust-lang.org)
 ~~~~
 
 # 表格
@@ -617,7 +617,7 @@ mode: block
 note: 无论名称叫什么，渲染时都会按正文出现的先后顺序自动编号。
 脚注标识符可以使用语义化的英文或拼音名称，方便维护长文档。
 ~~~~markdown
-MdPad 基于 eframe 与 egui[^egui-note] 构建。
+ThunderMD 基于 eframe 与 egui[^egui-note] 构建。
 
 [^egui-note]: egui 是纯 Rust 实现的跨平台即时模式 GUI 库。
 ~~~~
@@ -625,7 +625,7 @@ MdPad 基于 eframe 与 egui[^egui-note] 构建。
 ## 自动目录
 id: toc-block
 keywords: 目录, 自动目录, 大纲, toc, table of contents
-tags: MdPad 扩展语法，其他编辑器可能不支持
+tags: ThunderMD 扩展语法，其他编辑器可能不支持
 mode: block
 note: 也兼容 `[[TOC]]` 与 `[[_TOC_]]` 写法，目录项支持点击跳转。
 单独一行写 `[TOC]`，自动汇总当前文档全部标题生成可点击目录。
@@ -660,7 +660,7 @@ note: 如果使用 `---`，请务必在上方留一行空行，否则会把上�
 ## Emoji 短码
 id: emoji-shortcode
 keywords: emoji, 表情, 短码, 图标, smile, rocket, heart
-tags: MdPad 扩展语法，其他编辑器可能不支持
+tags: ThunderMD 扩展语法，其他编辑器可能不支持
 mode: block
 note: 完整词库基于 GitHub / Unicode 标准短码，下面列出写作中最常用的部分。
 用成对的冒号 `:短码:` 插入原生彩色或单色 Emoji 表情。
@@ -689,7 +689,7 @@ note: 必须位于文档第 1 行；关闭「预览中显示 YAML Front Matter�
 ~~~~markdown
 ---
 title: 产品发布说明
-author: MdPad
+author: ThunderMD
 tags: [rust, markdown]
 ---
 
@@ -709,7 +709,7 @@ note: 同样受「预览中显示 YAML Front Matter」开关控制，且必须�
 title = "TOML 元数据示例"
 draft = false
 [author]
-name = "MdPad"
+name = "ThunderMD"
 +++
 
 正文从这里开始。
@@ -732,7 +732,7 @@ id: html-mark
 keywords: 高亮, mark, html, 荧光笔
 tags: HTML 写法
 mode: inline
-标准 HTML 高亮标签 `<mark>`，效果与 MdPad 扩展 `==高亮==` 一致，兼容更多编辑器。
+标准 HTML 高亮标签 `<mark>`，效果与 ThunderMD 扩展 `==高亮==` 一致，兼容更多编辑器。
 ~~~~markdown
 请优先检查 <mark>关键修改行</mark>。
 ~~~~
@@ -781,7 +781,7 @@ note: 当 `<center>` 内包含 Markdown 段落或图片时，首尾标签与内�
 
 居中的标题或**加粗文字**
 
-![居中示意图](bytes://mdpad/badge.png)
+![居中示意图](bytes://thundermd/badge.png)
 
 </center>
 ~~~~
@@ -797,7 +797,7 @@ mode: block
 
 <div align="right">
 
-右对齐的署名：MdPad 团队
+右对齐的署名：ThunderMD 团队
 
 </div>
 ~~~~
@@ -854,7 +854,7 @@ mode: block
 note: 本地相对路径（如 `assets/demo.mp4`）会自动解析 mp4/mov 文件头时长；本例使用网络视频地址与内置封面图演示，点击卡片将在外部默认程序中打开。
 使用 `<video>` 标签生成媒体信息卡片，支持 `poster` 封面图、`title` 标题及内部 `<source>` 子标签。
 ~~~~markdown
-<video src="https://example.com/media/demo.mp4" poster="bytes://mdpad/landscape.png" title="MdPad 功能演示视频" controls></video>
+<video src="https://example.com/media/demo.mp4" poster="bytes://thundermd/landscape.png" title="ThunderMD 功能演示视频" controls></video>
 ~~~~
 
 ## 音频卡片
@@ -871,7 +871,7 @@ note: 本地 wav / flac / m4a 文件会自动读取并展示音频时长；请�
 ## 图片语法写媒体链接
 id: media-image-syntax
 keywords: 视频, 音频, 媒体链接, mp4, mp3, wav, mov, flac
-tags: MdPad 扩展语法，其他编辑器可能不支持
+tags: ThunderMD 扩展语法，其他编辑器可能不支持
 mode: block
 note: 识别扩展名包括视频 `.mp4` `.mov` `.webm` `.mkv` 与音频 `.mp3` `.m4a` `.wav` `.flac` `.ogg`。
 直接把常见音视频文件名放进 Markdown 图片语法 `![标题](地址)` 中，自动升级为媒体卡片。
@@ -925,7 +925,7 @@ keywords: 常见问题, 删除线, 波浪线, 下标, tilde, strikethrough, faq
 setting: sup_sub
 mode: inline
 note: 保持书写双波浪线 `~~` 最稳妥，无论是否开启上标/下标设置都能稳定显示为删除线。
-在 MdPad 中，当开启「上标 / 下标」设置后，成对的单个 `~` 会优先解析为下标（如 `H~2~O`），不再表示删除线；只有关闭该设置时单个 `~` 才会被当作删除线。
+在 ThunderMD 中，当开启「上标 / 下标」设置后，成对的单个 `~` 会优先解析为下标（如 `H~2~O`），不再表示删除线；只有关闭该设置时单个 `~` 才会被当作删除线。
 ~~~~markdown
 总是删除线：~~已过期内容~~；单波浪线随设置变化：~文本~、H~2~O。
 ~~~~
@@ -951,7 +951,7 @@ note: 记得在 `<div>` / `<center>` 标签与 Markdown 图片行之间各留一
 ~~~~markdown
 <div align="center">
 
-![居中演示图](bytes://mdpad/badge.png)
+![居中演示图](bytes://thundermd/badge.png)
 
 </div>
 ~~~~

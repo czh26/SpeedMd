@@ -104,3 +104,16 @@ pub fn try_enable_rounded_corners(wh: &impl raw_window_handle::HasWindowHandle) 
     };
     hr == 0
 }
+
+/// 读取环境变量（优先 `THUNDERMD_<suffix>`，兼容回退旧前缀 `MDPAD_<suffix>`）。
+pub fn app_env(suffix: &str) -> Option<String> {
+    std::env::var(format!("THUNDERMD_{suffix}"))
+        .ok()
+        .or_else(|| std::env::var(format!("MDPAD_{suffix}")).ok())
+}
+
+/// 读取 OS 字符串环境变量（优先 `THUNDERMD_<suffix>`，兼容回退旧前缀 `MDPAD_<suffix>`）。
+pub fn app_env_os(suffix: &str) -> Option<std::ffi::OsString> {
+    std::env::var_os(format!("THUNDERMD_{suffix}"))
+        .or_else(|| std::env::var_os(format!("MDPAD_{suffix}")))
+}

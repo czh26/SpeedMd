@@ -29,7 +29,7 @@ pub fn to_html_fragment(md: &str, base_dir: Option<&Path>, sup_sub: bool) -> Str
             embed_images_base64: false,
             base_dir: base_dir.map(Path::to_path_buf),
             sup_sub,
-            fallback_title: "MdPad 导出".into(),
+            fallback_title: "ThunderMD 导出".into(),
         },
     )
 }
@@ -246,7 +246,7 @@ pub fn export_markdown(md: &str, opts: &ExportOptions) -> String {
                             }
                             Segment::MarkToggle => {
                                 push_target(
-                                    Event::InlineHtml("__MDPAD_MARK_TOGGLE__".into()),
+                                    Event::InlineHtml("__THUNDERMD_MARK_TOGGLE__".into()),
                                     in_para_capture,
                                     &mut para_buf,
                                     &mut out_events,
@@ -407,7 +407,7 @@ fn extract_front_matter_title(raw: &str) -> Option<String> {
 fn emit_with_marks(buf: Vec<Event<'static>>, out: &mut Vec<Event<'static>>) {
     let total_toggles = buf
         .iter()
-        .filter(|e| matches!(e, Event::InlineHtml(s) if s.as_ref() == "__MDPAD_MARK_TOGGLE__"))
+        .filter(|e| matches!(e, Event::InlineHtml(s) if s.as_ref() == "__THUNDERMD_MARK_TOGGLE__"))
         .count();
     let pairs = total_toggles / 2;
     let mut emitted_toggles = 0usize;
@@ -415,7 +415,7 @@ fn emit_with_marks(buf: Vec<Event<'static>>, out: &mut Vec<Event<'static>>) {
 
     for ev in buf {
         if let Event::InlineHtml(ref s) = ev
-            && s.as_ref() == "__MDPAD_MARK_TOGGLE__"
+            && s.as_ref() == "__THUNDERMD_MARK_TOGGLE__"
         {
             if emitted_toggles < pairs * 2 {
                 emitted_toggles += 1;

@@ -18,9 +18,9 @@ use std::time::{Duration, Instant};
 
 const RAW_MANUAL: &str = include_str!("manual.md");
 
-pub const DEMO_LANDSCAPE_URI: &str = "bytes://mdpad/landscape.png";
-pub const DEMO_BADGE_URI: &str = "bytes://mdpad/badge.png";
-pub const DEMO_LOCAL_URI: &str = "bytes://mdpad/local-demo.png";
+pub const DEMO_LANDSCAPE_URI: &str = "bytes://thundermd/landscape.png";
+pub const DEMO_BADGE_URI: &str = "bytes://thundermd/badge.png";
+pub const DEMO_LOCAL_URI: &str = "bytes://thundermd/local-demo.png";
 
 struct DemoImages {
     landscape: Vec<u8>,
@@ -155,7 +155,7 @@ fn build_demo_images() -> DemoImages {
 
 /// 按需将内置演示 PNG 注册到 egui 图片缓存中（启动阶段零开销）。
 pub fn ensure_demo_images(ctx: &egui::Context) {
-    let reg_id = egui::Id::unique("mdpad_manual_demo_images_loaded");
+    let reg_id = egui::Id::unique("thundermd_manual_demo_images_loaded");
     if ctx.data(|d| d.get_temp::<bool>(reg_id)).unwrap_or(false) {
         return;
     }
