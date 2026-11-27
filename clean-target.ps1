@@ -6,6 +6,7 @@
 # 改依赖、改 feature、升级 rustc 后会生成新哈希的目录，旧的不会自动删除。
 # 本脚本把"同一个包、同一种目标、同一份源码、同样的 feature 和 profile"的多个目录视为同一单元的新旧版本，
 # 只保留最近编译过的那个；增量编译缓存每个 crate 只保留最近 3 个（build / test / check 各一）。
+# 另外通过 cargo metadata 找出已经不存在的包（项目改名、删掉的依赖），把它们的产物、增量缓存和 exe/pdb 全部删除。
 # 万一误删，下次编译时 Cargo 只会重新编译那一个单元，不会出错。
 # 注意：不要在 cargo 正在编译时运行。
 param([switch]$DryRun)
@@ -13,6 +14,22 @@ $ErrorActionPreference = 'Stop'
 
 $target = Join-Path $PSScriptRoot 'target'
 if (-not (Test-Path -LiteralPath $target)) { Write-Host 'target 目录不存在，无需清理。'; exit 0 }
+
+# 当前依赖图里的所有包名、本项目自己的 crate 名（cargo metadata 不会编译，约 1 秒）
+$allPkgs = $null; $myCrates = $null
+try {
+    Push-Location $PSScriptRoot
+    $meta = cargo metadata --format-version 1 --offline 2>$null | ConvertFrom-Json
+    if ($LASTEXITCODE -eq 0 -and $meta) {
+        $allPkgs = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        $myCrates = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        foreach ($p in $meta.packages) { [void]$allPkgs.Add($p.name) }
+        foreach ($p in ($meta.packages | Where-Object { $meta.workspace_members -contains $_.id })) {
+            foreach ($t in $p.targets) { [void]$myCrates.Add($t.name); [void]$myCrates.Add($t.name.Replace('-', '_')) }
+        }
+    }
+} catch { } finally { Pop-Location }
+if (-not $allPkgs) { Write-Host 'cargo metadata 失败，跳过"已不存在的包"检查。' -ForegroundColor Yellow }
 
 function Get-Newest([string]$dir) {
     $t = [datetime]::MinValue
@@ -25,9 +42,10 @@ function Get-Newest([string]$dir) {
     if ($t -eq [datetime]::MinValue) { $t = [IO.Directory]::GetLastWriteTimeUtc($dir) }
     $t
 }
-function Get-Size([string]$dir) {
+function Get-Size([string]$path) {
+    if ([IO.File]::Exists($path)) { return ([IO.FileInfo]$path).Length }
     $s = [long]0
-    foreach ($f in [IO.Directory]::EnumerateFiles($dir, '*', 'AllDirectories')) { $s += ([IO.FileInfo]$f).Length }
+    foreach ($f in [IO.Directory]::EnumerateFiles($path, '*', 'AllDirectories')) { $s += ([IO.FileInfo]$f).Length }
     $s
 }
 
@@ -39,8 +57,16 @@ foreach ($prof in $profiles) {
     $buildDir = Join-Path $prof.FullName 'build'
     if (-not [IO.Directory]::Exists($buildDir)) { continue }
 
+    # ---------- 已不存在的本项目产物：target/<profile>/旧名字.exe / .pdb / .d ----------
+    if ($myCrates) {
+        foreach ($f in [IO.Directory]::GetFiles($prof.FullName)) {
+            if ($f -match '\.(exe|pdb|d)$' -and -not $myCrates.Contains([IO.Path]::GetFileNameWithoutExtension($f))) { $victims.Add($f) }
+        }
+    }
+
     # ---------- 编译单元 ----------
     foreach ($pkgDir in [IO.Directory]::GetDirectories($buildDir)) {
+        if ($allPkgs -and -not $allPkgs.Contains([IO.Path]::GetFileName($pkgDir))) { $victims.Add($pkgDir); continue }   # 包已不在依赖图里
         $units = foreach ($h in [IO.Directory]::GetDirectories($pkgDir)) {
             if ([IO.Path]::GetFileName($h) -notmatch '^[0-9a-f]{16}$') { continue }
             $fpDir = Join-Path $h 'fingerprint'
@@ -89,12 +115,15 @@ foreach ($prof in $profiles) {
         foreach ($d in $dead.Keys) { $victims.Add($d) }
     }
 
-    # ---------- 增量编译缓存：每个 crate 保留最近 3 个 ----------
+    # ---------- 增量编译缓存：已不存在的 crate 全删，其余每个 crate 保留最近 3 个 ----------
     $incr = Join-Path $prof.FullName 'incremental'
     if ([IO.Directory]::Exists($incr)) {
         Get-ChildItem -LiteralPath $incr -Directory |
             Group-Object { $_.Name.Substring(0, [Math]::Max(0, $_.Name.LastIndexOf('-'))) } |
-            ForEach-Object { $_.Group | Sort-Object LastWriteTimeUtc -Descending | Select-Object -Skip 3 | ForEach-Object { $victims.Add($_.FullName) } }
+            ForEach-Object {
+                $keep = if ($myCrates -and -not $myCrates.Contains($_.Name)) { 0 } else { 3 }
+                $_.Group | Sort-Object LastWriteTimeUtc -Descending | Select-Object -Skip $keep | ForEach-Object { $victims.Add($_.FullName) }
+            }
     }
 }
 
