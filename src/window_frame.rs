@@ -237,6 +237,19 @@ pub fn resize_cursor(dir: ResizeDirection) -> CursorIcon {
     }
 }
 
+fn scale_premultiplied(c: Color32, factor: f32) -> Color32 {
+    let f = factor.clamp(0.0, 1.0);
+    if f <= 0.0 || c == Color32::TRANSPARENT {
+        return Color32::TRANSPARENT;
+    }
+    if f >= 1.0 {
+        return c;
+    }
+    let [r, g, b, a] = c.to_array();
+    let sc = |v: u8| (v as f32 * f).round().clamp(0.0, 255.0) as u8;
+    Color32::from_rgba_premultiplied(sc(r), sc(g), sc(b), sc(a))
+}
+
 fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
     if t <= 0.0 {
@@ -245,16 +258,40 @@ fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
     if t >= 1.0 {
         return b;
     }
+    let [ar, ag, ab, aa] = a.to_array();
+    let [br, bg, bb, ba] = b.to_array();
     let ch = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round().clamp(0.0, 255.0) as u8;
-    Color32::from_rgba_unmultiplied(ch(a.r(), b.r()), ch(a.g(), b.g()), ch(a.b(), b.b()), ch(a.a(), b.a()))
+    Color32::from_rgba_premultiplied(ch(ar, br), ch(ag, bg), ch(ab, bb), ch(aa, ba))
 }
 
 fn lerp_stroke(a: Stroke, b: Stroke, t: f32) -> Stroke {
-    let w = a.width + (b.width - a.width) * t.clamp(0.0, 1.0);
-    if w <= 0.01 {
-        Stroke::NONE
-    } else {
-        Stroke::new(w, lerp_color(a.color, b.color, t))
+    let t = t.clamp(0.0, 1.0);
+    let a_empty = a.width <= 0.01 || a.color == Color32::TRANSPARENT;
+    let b_empty = b.width <= 0.01 || b.color == Color32::TRANSPARENT;
+    match (a_empty, b_empty) {
+        (true, true) => Stroke::NONE,
+        (true, false) => {
+            if t <= 0.01 {
+                Stroke::NONE
+            } else {
+                Stroke::new(b.width, scale_premultiplied(b.color, t))
+            }
+        }
+        (false, true) => {
+            if t >= 0.99 {
+                Stroke::NONE
+            } else {
+                Stroke::new(a.width, scale_premultiplied(a.color, 1.0 - t))
+            }
+        }
+        (false, false) => {
+            let w = a.width + (b.width - a.width) * t;
+            if w <= 0.01 {
+                Stroke::NONE
+            } else {
+                Stroke::new(w, lerp_color(a.color, b.color, t))
+            }
+        }
     }
 }
 
@@ -338,6 +375,61 @@ pub fn paint_window_control_icon(
     }
 }
 
+/// 计算窗口控制按钮在给定悬停/按下进度下的（背景、描边、图标）颜色。
+///
+/// 过渡期间以按钮下方实色顶栏表面色作为渐变起点（替代 `Color32::TRANSPARENT`），
+/// 避免向透明黑插值以及半透明状态透出下方 `hover_shadow` 暗底导致移出时泛黑灰。
+pub(crate) fn compute_window_btn_colors(
+    spec: &ThemeSpec,
+    kind: WindowControlBtn,
+    on_left_split: bool,
+    focused: bool,
+    hover_t: f32,
+    active_t: f32,
+) -> (Color32, Stroke, Color32) {
+    let wc = &spec.window_controls;
+    let idle_fg = match (on_left_split, focused) {
+        (true, true) => wc.on_left_split_idle_fg,
+        (true, false) => wc.on_left_split_unfocused_fg,
+        (false, true) => wc.icon_idle_fg,
+        (false, false) => wc.icon_unfocused_fg,
+    };
+    let hover_t = hover_t.clamp(0.0, 1.0);
+    let active_t = active_t.clamp(0.0, 1.0);
+    if hover_t <= 0.005 && active_t <= 0.005 {
+        return (wc.bg_idle, wc.stroke_idle, idle_fg);
+    }
+
+    let bar_surface_bg = if on_left_split {
+        spec.top_bar_left_bg.unwrap_or(spec.top_bar_bg)
+    } else {
+        spec.top_bar_bg
+    };
+    let idle_bg = if wc.bg_idle == Color32::TRANSPARENT {
+        bar_surface_bg
+    } else {
+        wc.bg_idle
+    };
+
+    if kind == WindowControlBtn::Close {
+        let bg_h = lerp_color(idle_bg, wc.close_bg_hover, hover_t);
+        let bg = lerp_color(bg_h, wc.close_bg_active, active_t);
+        let st = lerp_stroke(wc.stroke_idle, wc.close_stroke_hover, hover_t);
+        let fg_h = lerp_color(idle_fg, wc.close_icon_hover, hover_t);
+        let fg = lerp_color(fg_h, wc.close_icon_active, active_t);
+        (bg, st, fg)
+    } else {
+        let hover_bg_base = if on_left_split { wc.on_left_split_hover_bg } else { wc.bg_hover };
+        let bg_h = lerp_color(idle_bg, hover_bg_base, hover_t);
+        let bg = lerp_color(bg_h, wc.bg_active, active_t);
+        let st_h = lerp_stroke(wc.stroke_idle, wc.stroke_hover, hover_t);
+        let st = lerp_stroke(st_h, wc.stroke_active, active_t);
+        let fg_h = lerp_color(idle_fg, wc.icon_hover_fg, hover_t);
+        let fg = lerp_color(fg_h, wc.icon_active_fg, active_t);
+        (bg, st, fg)
+    }
+}
+
 /// 在顶栏右侧绘制最小化、最大化/还原、关闭按钮，并返回触发的视口动作。
 pub fn paint_window_controls(
     ui: &mut egui::Ui,
@@ -362,41 +454,22 @@ pub fn paint_window_controls(
         }
 
         let hover_t = if test_hover == Some(b.kind) {
-            1.0
+            std::env::var("MDPAD_TEST_HOVER_T")
+                .ok()
+                .and_then(|s| s.trim().parse::<f32>().ok())
+                .unwrap_or(1.0)
+                .clamp(0.0, 1.0)
         } else {
             ctx.animate_bool_with_time(id.with("hover"), is_hover, 0.10)
         };
         let active_t = ctx.animate_bool_with_time(id.with("active"), is_down, 0.08);
 
         let on_left_split = split_left_x.is_some_and(|dx| b.visual_rect.center().x < dx);
-        let idle_fg = match (on_left_split, focused) {
-            (true, true) => wc.on_left_split_idle_fg,
-            (true, false) => wc.on_left_split_unfocused_fg,
-            (false, true) => wc.icon_idle_fg,
-            (false, false) => wc.icon_unfocused_fg,
-        };
-        let hover_bg_base = if on_left_split { wc.on_left_split_hover_bg } else { wc.bg_hover };
-
-        let (bg, stroke, fg) = if b.kind == WindowControlBtn::Close {
-            let bg_h = lerp_color(wc.bg_idle, wc.close_bg_hover, hover_t);
-            let bg = lerp_color(bg_h, wc.close_bg_active, active_t);
-            let st = lerp_stroke(wc.stroke_idle, wc.close_stroke_hover, hover_t);
-            let fg_h = lerp_color(idle_fg, wc.close_icon_hover, hover_t);
-            let fg = lerp_color(fg_h, wc.close_icon_active, active_t);
-            (bg, st, fg)
-        } else {
-            let bg_h = lerp_color(wc.bg_idle, hover_bg_base, hover_t);
-            let bg = lerp_color(bg_h, wc.bg_active, active_t);
-            let st_h = lerp_stroke(wc.stroke_idle, wc.stroke_hover, hover_t);
-            let st = lerp_stroke(st_h, wc.stroke_active, active_t);
-            let fg_h = lerp_color(idle_fg, wc.icon_hover_fg, hover_t);
-            let fg = lerp_color(fg_h, wc.icon_active_fg, active_t);
-            (bg, st, fg)
-        };
+        let (bg, stroke, fg) = compute_window_btn_colors(spec, b.kind, on_left_split, focused, hover_t, active_t);
 
         if hover_t > 0.02 && wc.hover_shadow != Shadow::NONE {
             let mut sh = wc.hover_shadow;
-            sh.color = sh.color.gamma_multiply(hover_t);
+            sh.color = scale_premultiplied(sh.color, hover_t);
             ui.painter().add(sh.as_shape(b.visual_rect, wc.corner_radius));
         }
         if bg != Color32::TRANSPARENT {
@@ -414,7 +487,7 @@ pub fn paint_window_controls(
             ui.painter().hline(
                 (b.visual_rect.left() + r)..=(b.visual_rect.right() - r),
                 b.visual_rect.top() + 0.6,
-                Stroke::new(1.0, hi.gamma_multiply(hover_t)),
+                Stroke::new(1.0, scale_premultiplied(hi, hover_t)),
             );
         }
 
@@ -616,5 +689,57 @@ mod tests {
         assert_eq!(parse_use_system_flag_from_ron("(use_system_titlebar:true)"), Some(true));
         assert_eq!(parse_use_system_flag_from_ron("(use_system_titlebar: false)"), Some(false));
         assert_eq!(parse_use_system_flag_from_ron("(theme: ZenHorizon)"), None);
+    }
+
+    #[test]
+    fn window_control_transition_colors_have_no_dark_or_gray_dip() {
+        assert_eq!(lerp_color(Color32::TRANSPARENT, Color32::WHITE, 0.5).to_array(), [128, 128, 128, 128]);
+
+        for id in ThemeId::ALL {
+            let spec = id.spec();
+            let wc = &spec.window_controls;
+            for kind in [
+                WindowControlBtn::Minimize,
+                WindowControlBtn::Maximize,
+                WindowControlBtn::Close,
+            ] {
+                for on_left_split in [false, true] {
+                    let bar_bg = if on_left_split {
+                        spec.top_bar_left_bg.unwrap_or(spec.top_bar_bg)
+                    } else {
+                        spec.top_bar_bg
+                    };
+                    let target_bg = if kind == WindowControlBtn::Close {
+                        wc.close_bg_hover
+                    } else if on_left_split {
+                        wc.on_left_split_hover_bg
+                    } else {
+                        wc.bg_hover
+                    };
+
+                    for t in [0.01_f32, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0] {
+                        let (bg, _st, _fg) = compute_window_btn_colors(spec, kind, on_left_split, true, t, 0.0);
+                        assert_eq!(
+                            bg.a(),
+                            255,
+                            "{id:?} {kind:?} left={on_left_split} t={t} leaked semi-transparent bg over shadow"
+                        );
+                        for ch_idx in 0..3 {
+                            let lo = bar_bg.to_array()[ch_idx].min(target_bg.to_array()[ch_idx]).saturating_sub(1);
+                            let hi = bar_bg.to_array()[ch_idx].max(target_bg.to_array()[ch_idx]).saturating_add(1);
+                            let val = bg.to_array()[ch_idx];
+                            assert!(
+                                (lo..=hi).contains(&val),
+                                "{id:?} {kind:?} left={on_left_split} t={t} ch={ch_idx} val={val} outside {lo}..={hi}"
+                            );
+                        }
+                    }
+
+                    let (idle_bg, idle_st, _) = compute_window_btn_colors(spec, kind, on_left_split, true, 0.0, 0.0);
+                    assert_eq!(idle_bg, wc.bg_idle);
+                    assert_eq!(idle_st, wc.stroke_idle);
+                }
+            }
+        }
     }
 }
