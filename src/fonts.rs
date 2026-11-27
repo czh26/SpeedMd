@@ -585,14 +585,6 @@ pub fn apply_choice(ctx: &egui::Context, catalog: Option<&FontCatalog>, choice: 
     } else {
         (None, None, None)
     };
-    let (cjk_bold, _) = load_default(
-        &mut fonts,
-        &mut caches,
-        &dir,
-        "cjk-bold",
-        &["msyhbd.ttc", "msyhbd.ttf", "Dengb.ttf", "simhei.ttf"],
-        None,
-    );
     let (symbol, _) = load_default(&mut fonts, &mut caches, &dir, "symbol", &["seguisym.ttf"], None);
 
     let ui_reg_loc = resolve_role_loc(custom_preview, false, &dir, &["segoeui.ttf"]);
@@ -601,8 +593,48 @@ pub fn apply_choice(ctx: &egui::Context, catalog: Option<&FontCatalog>, choice: 
         load_primary(&mut fonts, &mut caches, "ui-regular", "segoe", ui_reg_loc, ui_reg_sync);
 
     let ui_bold_loc = resolve_role_loc(custom_preview, true, &dir, &["segoeuib.ttf"]);
-    let ui_bold_sync = if ui_bold_loc.as_ref().is_some_and(|(_, c)| *c) { cjk_metrics } else { None };
-    let (ui_bold, _) = load_primary(&mut fonts, &mut caches, "ui-bold", "segoe-bold", ui_bold_loc, ui_bold_sync);
+    let ui_bold_sync = if custom_preview.is_some() { cjk_metrics } else { None };
+    let (ui_bold, ui_bold_eff_m) = if let Some((loc, is_custom)) = ui_bold_loc
+        && let Some((blob, m)) = caches.resolve_blob(&loc, ui_bold_sync)
+    {
+        let y_delta = ui_eff_m
+            .zip(m)
+            .map(|(u, b)| u.mid_factor() - b.mid_factor())
+            .filter(|d| d.abs() > 0.015)
+            .map(|d| d.clamp(-0.4, 0.4))
+            .unwrap_or(0.0);
+        let unhint = m.is_some_and(|vm| vm.has_cjk);
+        let tweak = (unhint || y_delta != 0.0).then(|| FontTweak {
+            y_offset_factor: y_delta,
+            hinting: unhint.then_some(false),
+            ..Default::default()
+        });
+        let name = if is_custom { "ui-bold" } else { "segoe-bold" };
+        (Some(register_font(&mut fonts, name, blob, loc.ttc_index, tweak.as_ref())), m)
+    } else {
+        (None, None)
+    };
+
+    let cjk_bold = if let Some((loc, blob, cbm)) =
+        load_default_loc(&mut caches, &dir, &["msyhbd.ttc", "msyhbd.ttf", "Dengb.ttf", "simhei.ttf"])
+    {
+        let y_delta = if ui_bold_eff_m.is_some_and(|bm| !bm.has_cjk)
+            && let (Some(um), Some(cm)) = (ui_eff_m, cbm)
+            && (um.mid_factor() - cm.mid_factor()).abs() > 0.015
+        {
+            (um.mid_factor() - cm.mid_factor()).clamp(-0.4, 0.4)
+        } else {
+            0.0
+        };
+        let tw = FontTweak {
+            y_offset_factor: y_delta,
+            hinting: Some(false),
+            ..Default::default()
+        };
+        Some(register_font(&mut fonts, "cjk-bold", blob, loc.ttc_index, Some(&tw)))
+    } else {
+        None
+    };
 
     let code_loc = resolve_role_loc(custom_code, false, &dir, &["consola.ttf"]);
     let (mono_code, mono_eff_m) =
@@ -823,6 +855,115 @@ mod tests {
                 FontFamily::Name("code".into()),
             ] {
                 assert_row_aligned(&ctx3, fam, false);
+            }
+        }
+    }
+
+    fn assert_preview_bold_row_aligned(
+        ctx: &egui::Context,
+        sample: &str,
+    ) -> (Arc<egui::Galley>, Option<Arc<egui::ColorImage>>) {
+        let th = crate::markdown::Theme::from_theme(crate::theme::ThemeId::ZenHorizon, 16.0, 1.6, 0.75);
+        let doc = crate::markdown::parse(
+            sample,
+            &th,
+            &crate::markdown::ParseOptions { sup_sub: false, front_matter: false },
+        );
+        let crate::markdown::Block::Paragraph(inl) = &doc.blocks[0] else {
+            panic!("expected paragraph");
+        };
+        let crate::markdown::Chunk::Text(rich) = &inl.chunks[0] else {
+            panic!("expected rich text chunk");
+        };
+
+        let mut para_galley = None;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            para_galley = Some(ui.fonts_mut(|f| f.layout_job((*rich.job).clone())));
+        });
+        let atlas = out.textures_delta.set.iter().find_map(|(id, deltas)| {
+            (*id == egui::TextureId::default())
+                .then(|| deltas.iter().find(|d| d.pos.is_none()))
+                .flatten()
+                .map(|d| {
+                    let egui::ImageData::Color(c) = &d.image;
+                    Arc::clone(c)
+                })
+        });
+        out.textures_delta.clear();
+
+        let galley = para_galley.unwrap();
+        assert_eq!(galley.rows.len(), 1);
+        let (mut min_y, mut max_y) = (f32::INFINITY, f32::NEG_INFINITY);
+        let (mut min_top, mut max_top) = (f32::INFINITY, f32::NEG_INFINITY);
+        let (mut min_bot, mut max_bot) = (f32::INFINITY, f32::NEG_INFINITY);
+        for g in &galley.rows[0].row.glyphs {
+            if g.chr == ' ' || g.uv_rect.is_nothing() {
+                continue;
+            }
+            let r = g.logical_rect();
+            min_y = min_y.min(g.pos.y);
+            max_y = max_y.max(g.pos.y);
+            min_top = min_top.min(r.top());
+            max_top = max_top.max(r.top());
+            min_bot = min_bot.min(r.bottom());
+            max_bot = max_bot.max(r.bottom());
+        }
+        assert!(max_y - min_y <= 0.5, "baseline mismatch: {min_y}..{max_y}");
+        assert!(max_top - min_top <= 0.5, "logical top mismatch: {min_top}..{max_top}");
+        assert!(max_bot - min_bot <= 0.5, "logical bottom mismatch: {min_bot}..{max_bot}");
+
+        (galley, atlas)
+    }
+
+    #[test]
+    fn bold_and_regular_preview_share_baseline_and_ink_bounds() {
+        let sample = "这是 **重要结论**，也可以写成 __同样加粗__，或 ***非常重要***，English **Bold**。";
+        let ctx = egui::Context::default();
+        setup(&ctx);
+        let (galley, atlas) = assert_preview_bold_row_aligned(&ctx, sample);
+        let atlas = atlas.expect("expected default font atlas in textures_delta.set");
+
+        let (mut min_ink_bot, mut max_ink_bot) = (f32::INFINITY, f32::NEG_INFINITY);
+        let mut checked = 0usize;
+        for g in &galley.rows[0].row.glyphs {
+            if !matches!(g.chr, '这' | '是' | '重' | '要' | '同' | '粗') || g.uv_rect.is_nothing() {
+                continue;
+            }
+            let x0 = g.uv_rect.min[0] as usize;
+            let x1 = g.uv_rect.max[0] as usize;
+            let y0 = g.uv_rect.min[1] as usize;
+            let y1 = g.uv_rect.max[1] as usize;
+            let mut max_py: Option<usize> = None;
+            for py in y0..y1 {
+                for px in x0..x1 {
+                    if atlas[(px, py)].a() >= 64 {
+                        max_py = Some(max_py.map_or(py, |m| m.max(py)));
+                    }
+                }
+            }
+            let max_py = max_py.unwrap_or_else(|| panic!("no opaque ink for {:?}", g.chr));
+            let ink_bot = g.pos.y + g.uv_rect.offset.y + (max_py + 1 - y0) as f32 / galley.pixels_per_point;
+            min_ink_bot = min_ink_bot.min(ink_bot);
+            max_ink_bot = max_ink_bot.max(ink_bot);
+            checked += 1;
+        }
+        assert!(checked >= 6, "expected to inspect regular and bold CJK glyphs, got {checked}");
+        assert!(
+            max_ink_bot - min_ink_bot <= 1.0,
+            "CJK visible ink bottom drifted: {min_ink_bot}..{max_ink_bot}"
+        );
+
+        let cat = scan_system_fonts();
+        for name in ["Microsoft YaHei UI", "Cascadia Mono"] {
+            if cat.families.contains_key(name) {
+                let ctx_custom = egui::Context::default();
+                let choice = FontChoice {
+                    preview: name.into(),
+                    editor: String::new(),
+                    code: String::new(),
+                };
+                apply_choice(&ctx_custom, Some(&cat), &choice);
+                let _ = assert_preview_bold_row_aligned(&ctx_custom, sample);
             }
         }
     }

@@ -400,7 +400,7 @@ fn is_escaped_at(b: &[u8], i: usize) -> bool {
     cnt % 2 == 1
 }
 
-/// 行内元素：`code`、**粗体** / __粗体__、[链接](url) / ![图片](url)。
+/// 行内元素：`code`、***粗斜体*** / ___粗斜体___、**粗体** / __粗体__、*斜体* / _斜体_、[链接](url) / ![图片](url)。
 /// 只在 ASCII 字节处切片，因此对中文等多字节字符是安全的。
 fn inline(job: &mut LayoutJob, s: &str, p: &EditorPalette, font: &FontId, code_fmt: &TextFormat) {
     let b = s.as_bytes();
@@ -419,24 +419,43 @@ fn inline(job: &mut LayoutJob, s: &str, p: &EditorPalette, font: &FontId, code_f
                     span = Some((i + end + 2, code_fmt.clone()));
                 }
             }
-            b'*' | b'_' if b.get(i + 1) == Some(&b[i]) => {
-                let delim = &s[i..i + 2];
-                if let Some(end) = s[i + 2..].find(delim)
-                    && end > 0
+            b'*' | b'_' => {
+                // 1. 三个 * / _ 粗斜体（_ 要求词边界，避免误判）
+                if b.get(i + 1) == Some(&b[i])
+                    && b.get(i + 2) == Some(&b[i])
+                    && b.get(i + 3).is_some_and(|c| *c != b[i] && !c.is_ascii_whitespace())
+                    && (b[i] == b'*' || i == 0 || !b[i - 1].is_ascii_alphanumeric())
+                    && let Some(end) = s[i + 3..].find(&s[i..i + 3])
                 {
-                    span = Some((i + end + 4, fmt(font, p.bold)));
+                    let close = i + 3 + end;
+                    if end > 0
+                        && !b[close - 1].is_ascii_whitespace()
+                        && b.get(close + 3) != Some(&b[i])
+                        && (b[i] == b'*' || !b.get(close + 3).is_some_and(u8::is_ascii_alphanumeric))
+                    {
+                        span = Some((close + 3, TextFormat { italics: true, ..fmt(font, p.bold) }));
+                    }
                 }
-            }
-            // 单个 * / _ 斜体（_ 要求左侧不是字母数字，避免 snake_case 误判）
-            b'*' | b'_'
-                if b.get(i + 1).is_some_and(|c| !c.is_ascii_whitespace())
-                    && (b[i] == b'*' || i == 0 || !b[i - 1].is_ascii_alphanumeric()) =>
-            {
-                let ch = b[i] as char;
-                if let Some(end) = s[i + 1..].find(ch) {
-                    let close = i + 1 + end;
-                    if end > 0 && !b[close - 1].is_ascii_whitespace() && b.get(close + 1) != Some(&b[i]) {
-                        span = Some((close + 1, TextFormat { italics: true, ..fmt(font, p.normal) }));
+                // 2. 两个 * / _ 粗体
+                if span.is_none() && b.get(i + 1) == Some(&b[i]) {
+                    let delim = &s[i..i + 2];
+                    if let Some(end) = s[i + 2..].find(delim)
+                        && end > 0
+                    {
+                        span = Some((i + end + 4, fmt(font, p.bold)));
+                    }
+                }
+                // 3. 单个 * / _ 斜体（_ 要求左侧不是字母数字，避免 snake_case 误判）
+                if span.is_none()
+                    && b.get(i + 1).is_some_and(|c| !c.is_ascii_whitespace())
+                    && (b[i] == b'*' || i == 0 || !b[i - 1].is_ascii_alphanumeric())
+                {
+                    let ch = b[i] as char;
+                    if let Some(end) = s[i + 1..].find(ch) {
+                        let close = i + 1 + end;
+                        if end > 0 && !b[close - 1].is_ascii_whitespace() && b.get(close + 1) != Some(&b[i]) {
+                            span = Some((close + 1, TextFormat { italics: true, ..fmt(font, p.normal) }));
+                        }
                     }
                 }
             }
@@ -550,5 +569,27 @@ mod tests {
             }
             assert_eq!(cursor, job.text.len());
         }
+    }
+
+    #[test]
+    fn bold_italic_delimiters_highlight_completely() {
+        let code = "这是 ***非常重要*** 的提示，或 ___同样效果___。";
+        let job = highlight_manual_source(code, ThemeId::ZenHorizon, &FontId::monospace(14.0));
+        let bold_col = ThemeId::ZenHorizon.spec().editor.bold;
+
+        let spans: Vec<(&str, bool, Color32)> = job
+            .sections
+            .iter()
+            .map(|s| (&job.text[s.byte_range.start.0..s.byte_range.end.0], s.format.italics, s.format.color))
+            .collect();
+
+        assert!(
+            spans.contains(&("***非常重要***", true, bold_col)),
+            "missing full *** span: {spans:?}"
+        );
+        assert!(
+            spans.contains(&("___同样效果___", true, bold_col)),
+            "missing full ___ span: {spans:?}"
+        );
     }
 }
