@@ -16,7 +16,7 @@ use std::sync::LazyLock;
 
 /// 顶栏、底栏、标签栏与窗口按钮的全部尺寸（单位：逻辑像素 pt）。
 ///
-/// 保持 `top_bar_height = 48`、`top_pill_height = 32`、`status_bar_height = 32`、
+/// 保持 `top_bar_height = 48`、`top_pill_height = 32`、`status_bar_height = 36`、
 /// `status_pill_height = 24` 与 100% / 125% / 150% / 200% DPI 缩放均能整像素对齐。
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct ChromeMetrics {
@@ -146,7 +146,7 @@ pub struct ChromeMetrics {
 pub const CHROME: ChromeMetrics = ChromeMetrics {
     top_bar_height: 48.0,
     top_pill_height: 32.0,
-    status_bar_height: 32.0,
+    status_bar_height: 36.0,
     status_pill_height: 24.0,
     status_pill_radius: 12,
     status_pill_shadow_blur: 4,
@@ -258,7 +258,7 @@ pub const CHROME: ChromeMetrics = ChromeMetrics {
     status_dirty_dot_radius: 3.3,
     status_dirty_dot_text_gap: 5.5,
     status_dirty_reserve_w: 72.0,
-    stats_popup_offset: [-14.0, -38.0],
+    stats_popup_offset: [-14.0, -42.0],
 };
 
 pub const TOP_BAR_H: f32 = CHROME.top_bar_height;
