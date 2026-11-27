@@ -306,7 +306,7 @@ fn paint_active_tab(painter: &egui::Painter, r: Rect, top_bar_bottom: f32, spec:
                 pos2(r.center().x, r.bottom() - 1.5),
                 vec2(CHROME.tab_spark_size[0], CHROME.tab_spark_size[1]),
             );
-            theme::paint_bolt(painter, spark, tc.secondary_accent);
+            theme::paint_bolt(painter, spark, theme::BOLT_YELLOW);
         }
         ActiveTabStyle::ConnectedPageTopBar => {
             let rad = CornerRadius {

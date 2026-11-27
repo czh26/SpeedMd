@@ -1032,8 +1032,13 @@ impl MdApp {
         // 左区：徽标 + ThunderMD 字标 + ≡ 菜单钮
         let left_fg = if split_left_active { spec.top_bar_left_fg } else { spec.text_fg };
         let left_hover = if split_left_active { spec.sidebar.hover_bg } else { spec.hover_bg };
+        let left_bg = if split_left_active {
+            spec.top_bar_left_bg.unwrap_or(spec.top_bar_bg)
+        } else {
+            spec.top_bar_bg
+        };
 
-        theme::paint_brand_badge(ui.painter(), layout.badge_rect, spec);
+        theme::paint_brand_badge(ui.painter(), layout.badge_rect, spec, left_bg);
         let avail_wordmark_w = (layout.menu_btn_rect.left() - CHROME.wordmark_safe_gap - layout.wordmark_pos.x).max(0.0);
         let mut candidates = [
             CHROME.wordmark_font_size,
@@ -1387,7 +1392,9 @@ impl MdApp {
         ui.painter().add(ms.container_shadow.as_shape(rect, ms.outer_radius));
         ui.painter().rect_filled(rect, ms.outer_radius, bg);
         ui.painter().rect_stroke(rect, ms.outer_radius, ms.container_stroke, StrokeKind::Inside);
-        theme::paint_bolt(ui.painter(), rect.shrink(CHROME.theme_bolt_inset), spec.accent);
+        let bolt_side = (rect.width().min(rect.height()) - CHROME.theme_bolt_inset * 2.0).max(12.0);
+        let bolt_rect = Rect::from_center_size(rect.center(), vec2(bolt_side, bolt_side));
+        theme::paint_bolt_on(ui.painter(), bolt_rect, theme::BOLT_YELLOW, bg);
 
         if resp.clicked() {
             self.toggle_day_night(&ctx);
@@ -1637,7 +1644,7 @@ impl MdApp {
                 .on_hover_text(full_path);
         }
 
-        let (_is_floating_pill, pill_fg, bolt_col) = match spec.status_bar {
+        let (_is_floating_pill, pill_fg, bolt_col, bolt_bg) = match spec.status_bar {
             StatusBarStyle::FloatingPill {
                 pill_bg,
                 pill_fg,
@@ -1650,9 +1657,9 @@ impl MdApp {
                 ui.painter().rect_filled(pill_rect, CHROME.status_pill_radius, pill_bg);
                 ui.painter()
                     .rect_stroke(pill_rect, CHROME.status_pill_radius, pill_stroke, StrokeKind::Inside);
-                (true, pill_fg, bolt_color)
+                (true, pill_fg, bolt_color, pill_bg)
             }
-            StatusBarStyle::FlushTelemetry { bolt_color, text_color, .. } => (false, text_color, bolt_color),
+            StatusBarStyle::FlushTelemetry { bolt_color, text_color, .. } => (false, text_color, bolt_color, base_bg),
         };
 
         // 左右底栏所有文字与 ⚡ 统一按 [sb_top_px, sb_bot_px] 净内容中心线居中对齐
@@ -1660,7 +1667,7 @@ impl MdApp {
             theme::snap_centered_span_px(sb_top_px, sb_bot_px, CHROME.status_bolt_size[1], ppp);
         let bolt_x = theme::snap_px(pill_rect.left() + pill_pad_x, ppp);
         let bolt_rect = Rect::from_min_max(pos2(bolt_x, bolt_top), pos2(bolt_x + bolt_w, bolt_bot));
-        theme::paint_bolt(ui.painter(), bolt_rect, bolt_col);
+        theme::paint_bolt_on(ui.painter(), bolt_rect, bolt_col, bolt_bg);
         let stats_x = theme::snap_px(bolt_rect.right() + CHROME.status_bolt_gap, ppp);
         let stats_y = theme::galley_ink_centered_pos_y(sb_top_px, sb_bot_px, &text_galley, ppp);
         ui.painter().galley(pos2(stats_x, stats_y), text_galley, pill_fg);

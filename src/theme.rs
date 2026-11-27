@@ -40,7 +40,6 @@ pub struct ChromeMetrics {
     pub badge_size: f32,
     pub badge_size_compact: f32,
     pub badge_bolt_inset: f32,
-    pub badge_shield_stroke_w: f32,
     pub badge_wordmark_gap: f32,
     pub badge_wordmark_gap_compact: f32,
     pub wordmark_font_size: f32,
@@ -160,8 +159,7 @@ pub const CHROME: ChromeMetrics = ChromeMetrics {
     top_left_pad_compact: 7.0,
     badge_size: 26.0,
     badge_size_compact: 20.0,
-    badge_bolt_inset: 2.5,
-    badge_shield_stroke_w: 2.0,
+    badge_bolt_inset: 2.0,
     badge_wordmark_gap: 9.0,
     badge_wordmark_gap_compact: 5.0,
     wordmark_font_size: 17.5,
@@ -229,7 +227,7 @@ pub const CHROME: ChromeMetrics = ChromeMetrics {
     mode_angular_inner_radius: 6,
     theme_btn_width: 32.0,
     theme_btn_width_compact: 26.0,
-    theme_bolt_inset: 6.5,
+    theme_bolt_inset: 6.0,
     right_section_gap: 9.0,
     right_section_gap_compact: 4.0,
     win_btn_width: 34.0,
@@ -252,7 +250,7 @@ pub const CHROME: ChromeMetrics = ChromeMetrics {
     status_zone_gap: 14.0,
     status_split_pad_right: 10.0,
     status_pill_pad_x: 12.0,
-    status_bolt_size: [11.5, 14.0],
+    status_bolt_size: [11.0, 16.8],
     status_bolt_gap: 6.0,
     status_dirty_gap: 10.0,
     status_dirty_dot_radius: 3.3,
@@ -491,10 +489,8 @@ where
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BadgeStyle {
-    /// 极简几何双三角闪电（01 / 03 / 04 / 05）
-    GeometricBolt,
-    /// 绯红圆盾 + 金色外环 + 斜角金闪电（02 白昼疾影）
-    FlashShield,
+    /// 方案 F 去圆弧版：8 顶点中心对称亮黄钝尖闪电（5 套主题统一）
+    ChiseledBolt,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -822,6 +818,11 @@ pub struct ThemeSpec {
 // 5 套定稿主题 Token 定义
 // ============================================================================
 
+/// 5 套主题统一的闪电主色（神速力亮电黄）。
+pub const BOLT_YELLOW: Color32 = hex(0xFACC15);
+/// 浅色背景专用暖琥珀金微描边色，保证亮黄闪电在白/米白纸面上边界锐利不发虚。
+pub const BOLT_LIGHT_RIM: Color32 = hex(0xCA8A04);
+
 const ZEN_HORIZON: ThemeSpec = {
     let canvas = hex(0xFAF9F5);
     let surface = hex(0xFFFFFF);
@@ -878,7 +879,7 @@ const ZEN_HORIZON: ThemeSpec = {
         cursor_color: accent,
         window_shadow: Shadow { offset: [0, 8], blur: 20, spread: 0, color: alpha(hex(0x1C1917), 24) },
         popup_shadow: soft_shadow,
-        badge: BadgeStyle::GeometricBolt,
+        badge: BadgeStyle::ChiseledBolt,
         top_bar_bottom_line: TopBarBottomLine::None,
         active_tab_style: ActiveTabStyle::SoftShadowPill,
         mode_switch: ModeSwitchStyle {
@@ -925,7 +926,7 @@ const ZEN_HORIZON: ThemeSpec = {
             top_border: None,
             pill_bg: surface,
             pill_fg: text,
-            bolt_color: accent,
+            bolt_color: BOLT_YELLOW,
             pill_stroke: stroke(1.0, alpha(border, 150)),
             pill_shadow: Shadow {
                 offset: [0, 0],
@@ -1103,7 +1104,7 @@ const SCARLET_STREAK: ThemeSpec = {
         cursor_color: accent,
         window_shadow: Shadow { offset: [0, 8], blur: 20, spread: 0, color: alpha(hex(0x18181B), 24) },
         popup_shadow: soft_shadow,
-        badge: BadgeStyle::FlashShield,
+        badge: BadgeStyle::ChiseledBolt,
         top_bar_bottom_line: TopBarBottomLine::Gradient {
             left: accent,
             right: gold,
@@ -1153,7 +1154,7 @@ const SCARLET_STREAK: ThemeSpec = {
             top_border: Some(border),
             pill_bg: accent,
             pill_fg: on_accent,
-            bolt_color: gold,
+            bolt_color: BOLT_YELLOW,
             pill_stroke: Stroke::NONE,
             pill_shadow: Shadow {
                 offset: [0, 0],
@@ -1338,7 +1339,7 @@ const ATELIER_CONTRAST: ThemeSpec = {
         cursor_color: accent,
         window_shadow: Shadow { offset: [0, 8], blur: 20, spread: 0, color: alpha(left_bg, 28) },
         popup_shadow: soft_shadow,
-        badge: BadgeStyle::GeometricBolt,
+        badge: BadgeStyle::ChiseledBolt,
         top_bar_bottom_line: TopBarBottomLine::Solid {
             color: split_line,
             left_override: Some(left_border),
@@ -1387,7 +1388,7 @@ const ATELIER_CONTRAST: ThemeSpec = {
             top_border: None,
             pill_bg: code_bg,
             pill_fg: text,
-            bolt_color: accent,
+            bolt_color: BOLT_YELLOW,
             pill_stroke: stroke(1.0, split_line),
             pill_shadow: Shadow {
                 offset: [0, 0],
@@ -1568,7 +1569,7 @@ const CARBON_GOLD: ThemeSpec = {
         cursor_color: accent,
         window_shadow: dark_shadow,
         popup_shadow: Shadow { offset: [0, 6], blur: 14, spread: 0, color: alpha(hex(0x000000), 100) },
-        badge: BadgeStyle::GeometricBolt,
+        badge: BadgeStyle::ChiseledBolt,
         top_bar_bottom_line: TopBarBottomLine::Solid { color: border, left_override: None },
         active_tab_style: ActiveTabStyle::CarbonGoldUnderline,
         mode_switch: ModeSwitchStyle {
@@ -1612,7 +1613,7 @@ const CARBON_GOLD: ThemeSpec = {
         status_bar: StatusBarStyle::FlushTelemetry {
             bar_bg: chrome,
             top_border: border,
-            bolt_color: accent,
+            bolt_color: BOLT_YELLOW,
             text_color: accent,
         },
         sidebar: SidebarColors {
@@ -1790,7 +1791,7 @@ const TITANIUM_GLASS: ThemeSpec = {
         cursor_color: accent,
         window_shadow: glass_shadow,
         popup_shadow: glass_shadow,
-        badge: BadgeStyle::GeometricBolt,
+        badge: BadgeStyle::ChiseledBolt,
         top_bar_bottom_line: TopBarBottomLine::Solid { color: border, left_override: None },
         active_tab_style: ActiveTabStyle::SmokedGlassRim,
         mode_switch: ModeSwitchStyle {
@@ -1842,7 +1843,7 @@ const TITANIUM_GLASS: ThemeSpec = {
             top_border: Some(border),
             pill_bg: glass_card,
             pill_fg: text,
-            bolt_color: accent,
+            bolt_color: BOLT_YELLOW,
             pill_stroke: stroke(1.0, rim_stroke),
             pill_shadow: Shadow {
                 offset: [0, 0],
@@ -2256,44 +2257,78 @@ pub fn paint_close_x_icon(painter: &Painter, center: Pos2, half_logical: f32, st
 }
 
 // ============================================================================
-// 共享矢量绘制辅助（闪电徽标 / 02 圆盾金电徽章 / 渐变速度线 / 2px 点线）
+// 共享矢量绘制辅助（方案 F 去圆弧亮黄闪电 / 渐变速度线 / 2px 点线）
 // ============================================================================
 
-/// 在 `rect` 中绘制尖锐的双三角矢量闪电。
-pub fn paint_bolt(painter: &Painter, rect: Rect, color: Color32) {
-    let p = |nx: f32, ny: f32| pos2(rect.left() + rect.width() * nx, rect.top() + rect.height() * ny);
-    let mut mesh = Mesh::default();
-    let pts = [
-        p(0.60, 0.08),
-        p(0.20, 0.54),
-        p(0.50, 0.54),
-        p(0.40, 0.92),
-        p(0.80, 0.46),
-        p(0.50, 0.46),
-    ];
-    for pt in pts {
-        mesh.colored_vertex(pt, color);
-    }
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(0, 2, 5);
-    mesh.add_triangle(5, 2, 3);
-    mesh.add_triangle(5, 3, 4);
-    painter.add(mesh);
+/// 判断背景色是否属于浅色表面，用于决定亮黄闪电外缘是否启用深暖金收边抗锯齿。
+#[inline]
+pub fn is_light_surface(bg: Color32) -> bool {
+    (299 * bg.r() as u32 + 587 * bg.g() as u32 + 114 * bg.b() as u32) > 150_000
 }
 
-/// 绘制顶栏品牌徽标：普通几何闪电或「02 白昼疾影」圆盾金电徽章。
-pub fn paint_brand_badge(painter: &Painter, rect: Rect, spec: &ThemeSpec) {
+fn paint_bolt_impl(painter: &Painter, rect: Rect, color: Color32, rim: Option<(f32, Color32)>) {
+    if rect.width() <= 1.0 || rect.height() <= 1.0 {
+        return;
+    }
+    // 在任意正方形 S×S 中 scale = S / 24.0（顶栏 22×22 与 20×20 完全不变）；
+    // 在窄矩形中按闪电真实包围盒比例等比缩放，保证所有尺寸几何形态 100% 一致。
+    let scale = (rect.width() / 15.0).min(rect.height() / 24.0);
+    if scale <= 0.05 {
+        return;
+    }
+    let cx = rect.center().x;
+    let cy = rect.center().y;
+    let p = |x24: f32, y24: f32| pos2(cx + (x24 - 12.0) * scale, cy + (y24 - 12.0) * scale);
+
+    // 1) 若启用浅底增强外缘，先画在底层：只露出外侧约 0.5px 收边，绝不侵占内部亮黄色块。
+    if let Some((rim_sw, rim_col)) = rim {
+        let perimeter = vec![
+            p(13.6, 1.8),
+            p(14.8, 1.8),
+            p(12.7, 10.9),
+            p(18.4, 10.9),
+            p(10.4, 22.2),
+            p(9.2, 22.2),
+            p(11.3, 13.1),
+            p(5.6, 13.1),
+        ];
+        painter.add(egui::epaint::PathShape::closed_line(perimeter, Stroke::new(rim_sw, rim_col)));
+    }
+
+    // 2) 将 8 顶点闪电分解为上、下两个在中心实心区深层重叠的严格凸梯形，
+    //    调用 epaint 原生 PathShape::convex_polygon 获得零膨胀、零尖刺的 1px 边缘抗锯齿羽化。
+    let upper_blade = vec![p(13.6, 1.8), p(14.8, 1.8), p(12.1923, 13.1), p(5.6, 13.1)];
+    let lower_blade = vec![p(11.8077, 10.9), p(18.4, 10.9), p(10.4, 22.2), p(9.2, 22.2)];
+    painter.add(egui::epaint::PathShape::convex_polygon(upper_blade, color, Stroke::NONE));
+    painter.add(egui::epaint::PathShape::convex_polygon(lower_blade, color, Stroke::NONE));
+}
+
+/// 在给定背景色 `surface_bg` 上绘制严格等比、带 1px 原生抗锯齿羽化的中心对称钝尖闪电。
+pub fn paint_bolt_on(painter: &Painter, rect: Rect, color: Color32, surface_bg: Color32) {
+    let rim = if is_light_surface(surface_bg) {
+        let ppp = painter.pixels_per_point().max(1.0);
+        let scale = (rect.width() / 15.0).min(rect.height() / 24.0);
+        let rim_sw = (1.25 * scale * ppp).round().max(1.0) / ppp;
+        Some((rim_sw, mix(color, BOLT_LIGHT_RIM, 72, 100)))
+    } else {
+        None
+    };
+    paint_bolt_impl(painter, rect, color, rim);
+}
+
+/// 绘制兼容包装版钝尖矢量闪电（供跨色边界的标签火花等小装饰复用）。
+pub fn paint_bolt(painter: &Painter, rect: Rect, color: Color32) {
+    let ppp = painter.pixels_per_point().max(1.0);
+    let rim_sw = 1.0 / ppp;
+    let rim_col = mix(color, BOLT_LIGHT_RIM, 55, 100);
+    paint_bolt_impl(painter, rect, color, Some((rim_sw, rim_col)));
+}
+
+/// 绘制顶栏品牌徽标（5 套主题统一采用方案 F 去圆弧亮黄钝尖闪电）。
+pub fn paint_brand_badge(painter: &Painter, rect: Rect, spec: &ThemeSpec, surface_bg: Color32) {
     match spec.badge {
-        BadgeStyle::GeometricBolt => {
-            paint_bolt(painter, rect.shrink(CHROME.badge_bolt_inset), spec.accent);
-        }
-        BadgeStyle::FlashShield => {
-            let center = rect.center();
-            let radius = rect.width().min(rect.height()) * 0.46;
-            painter.circle_filled(center, radius, spec.accent);
-            painter.circle_stroke(center, radius, Stroke::new(CHROME.badge_shield_stroke_w, spec.secondary_accent));
-            let inner = Rect::from_center_size(center, vec2(radius * 1.32, radius * 1.42));
-            paint_bolt(painter, inner, spec.secondary_accent);
+        BadgeStyle::ChiseledBolt => {
+            paint_bolt_on(painter, rect.shrink(CHROME.badge_bolt_inset), BOLT_YELLOW, surface_bg);
         }
     }
 }
@@ -2431,5 +2466,73 @@ mod tests {
         assert_eq!(null_val, ThemeId::ZenHorizon);
         let valid: ThemeId = serde_json::from_str("\"ScarletStreak\"").unwrap();
         assert_eq!(valid, ThemeId::ScarletStreak);
+    }
+
+    #[test]
+    fn all_themes_use_yellow_chiseled_bolt_and_tessellate_cleanly() {
+        for id in ThemeId::ALL {
+            let spec = id.spec();
+            assert_eq!(spec.badge, BadgeStyle::ChiseledBolt, "{id:?} should use ChiseledBolt");
+            let bolt_col = match spec.status_bar {
+                StatusBarStyle::FloatingPill { bolt_color, .. } => bolt_color,
+                StatusBarStyle::FlushTelemetry { bolt_color, .. } => bolt_color,
+            };
+            assert_eq!(bolt_col, BOLT_YELLOW, "{id:?} status bolt_color should be BOLT_YELLOW");
+        }
+
+        for ppp in [1.0_f32, 1.5_f32] {
+            let ctx = egui::Context::default();
+            let mut raw = egui::RawInput::default();
+            if let Some(vp) = raw.viewports.get_mut(&egui::ViewportId::ROOT) {
+                vp.native_pixels_per_point = Some(ppp);
+            }
+            let mut out = ctx.run_pass(raw, |ctx| {
+                let painter = ctx.layer_painter(egui::LayerId::background());
+                for (idx, id) in ThemeId::ALL.iter().enumerate() {
+                    let spec = id.spec();
+                    let left_bg = spec.top_bar_left_bg.unwrap_or(spec.top_bar_bg);
+                    let x = idx as f32 * 40.0;
+                    paint_brand_badge(
+                        &painter,
+                        Rect::from_min_size(pos2(x, 0.0), vec2(CHROME.badge_size, CHROME.badge_size)),
+                        spec,
+                        left_bg,
+                    );
+                    paint_bolt_on(
+                        &painter,
+                        Rect::from_min_size(pos2(x, 40.0), vec2(20.0, 20.0)),
+                        BOLT_YELLOW,
+                        spec.mode_switch.container_bg,
+                    );
+                    let status_bg = match spec.status_bar {
+                        StatusBarStyle::FloatingPill { pill_bg, .. } => pill_bg,
+                        StatusBarStyle::FlushTelemetry { bar_bg, .. } => bar_bg,
+                    };
+                    paint_bolt_on(
+                        &painter,
+                        Rect::from_min_size(pos2(x, 80.0), vec2(CHROME.status_bolt_size[0], CHROME.status_bolt_size[1])),
+                        BOLT_YELLOW,
+                        status_bg,
+                    );
+                    paint_bolt(
+                        &painter,
+                        Rect::from_min_size(pos2(x, 110.0), vec2(CHROME.tab_spark_size[0], CHROME.tab_spark_size[1])),
+                        BOLT_YELLOW,
+                    );
+                }
+            });
+            out.textures_delta.clear();
+            let primitives = ctx.tessellate(out.shapes, out.pixels_per_point);
+            let mut total_verts = 0usize;
+            let mut total_indices = 0usize;
+            for cp in &primitives {
+                if let egui::epaint::Primitive::Mesh(mesh) = &cp.primitive {
+                    total_verts += mesh.vertices.len();
+                    total_indices += mesh.indices.len();
+                }
+            }
+            assert!(total_verts > 0, "ppp={ppp} generated zero vertices");
+            assert!(total_indices > 0 && total_indices % 3 == 0, "ppp={ppp} invalid triangle count");
+        }
     }
 }
