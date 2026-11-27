@@ -127,6 +127,7 @@ impl MdApp {
 
         let mut settings: Settings =
             cc.storage.and_then(|s| eframe::get_value(s, eframe::APP_KEY)).unwrap_or_default();
+        settings.migrate_legacy_defaults();
 
         if is_test {
             settings = Settings::default();
