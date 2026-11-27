@@ -407,3 +407,19 @@ cargo test                     # stats / keymap / find / textproc / html_inline 
 - **仓库迁移**：Git `origin` 远程地址更新为 `https://github.com/czh26/ThunderMD.git`，并在 `Cargo.toml` 补充 `repository = "https://github.com/czh26/ThunderMD"`。
 - **平滑兼容与窄窗适配**：新增 `winutil::app_env` / `app_env_os` 优先读取 `THUNDERMD_*` 并兼容回退 `MDPAD_*`；非自动化模式首次启动调用 `window_frame::migrate_legacy_storage_if_needed(APP_NAME, "MdPad")` 自动迁移既有 `app.ron` 与 `use_system_titlebar.flag`；顶栏 9 字母字标在 `< 620px` 窄宽下结合 `min_left_w = 136.0`、自适应字号与裁剪矩形，确保与 `≡` 按钮互不重叠。
 
+---
+
+## 13. 顶栏与底栏尺寸体系（ChromeMetrics）与像素级居中
+
+- **集中化尺寸管理（`src/theme.rs`）**：
+  - 顶栏、底栏、多文档标签栏、模式切换胶囊、`⚡` 主题按钮、品牌区域、`≡` 按钮、窗口控制三键以及紧凑布局阈值的全部几何尺寸统一收口于 `pub struct ChromeMetrics` 与常量 `pub const CHROME: ChromeMetrics`（[src/theme.rs](file:///c:/Users/25357/Desktop/markdown/src/theme.rs)），`TOP_BAR_H` 与 `STATUS_BAR_H` 直接派生自 `CHROME`；`ThemeSpec` 与 `WindowControlStyle` 仅保留各主题的颜色与造型定义，`app.rs`、`tabs.rs`、`window_frame.rs` 中不再散落界面尺寸魔法数字。
+  - **今后修改组件尺寸的方法**：只需调整 `src/theme.rs` 中的 `pub const CHROME: ChromeMetrics` 对应字段，无需修改绘制逻辑；改动后运行 `cargo test` 中的 `chrome_centering_math_within_1px_across_dpi_scales` 与 `--ignored measure_screenshot_chrome_margins` 即可验证所有主题和缩放比例下的对齐不变量。
+- **整体放大（约 +15%）与窄窗适配**：
+  - 顶栏高度 `42 -> 48 pt`、顶栏胶囊/标签/窗口按钮高度 `28 -> 32 pt`、标签与模式切换字号 `14.0`、品牌字标 `17.5` / 徽标 `26.0`、窗口控制按钮宽 `34.0`（图标描边 `1.55`）；底栏高度 `28 -> 32 pt`、底栏状态胶囊高度 `24.0`（圆角 `12`）、底栏字号 `13.0`；紧凑布局阈值由 `620 -> 700 pt`（`compact_sidebar_min_w = 150.0`），确保 `480 px` 最小窗口宽度下顶栏与侧栏不重叠、不裁切。
+  - `src/sidebar/files.rs` 文件树顶栏采用右对齐先预留 `📄+` / `📁+` / `↻` 按钮、左侧目录名自动省略号截断，防止 `480 px` 窄窗下目录名与按钮碰触。
+- **像素级垂直居中机制**：
+  - `compute_top_bar_layout`（[src/window_frame.rs](file:///c:/Users/25357/Desktop/markdown/src/window_frame.rs)）与 `status_bar`（[src/app.rs](file:///c:/Users/25357/Desktop/markdown/src/app.rs)）先扣除顶部外边框与结构底/顶分割线的物理像素，再在净内容区间 `[content_top_px, content_bot_px]` / `[sb_top_px, sb_bot_px]` 内通过 `snap_centered_span_px` 计算整像素对齐的胶囊边界。
+  - `galley_ink_centered_pos_y` 使用字形真实墨迹包围盒 `Galley::mesh_bounds` 居中文本，消除 Windows 下 `Segoe UI` 与 `msyh.ttc` 行距不对称导致的视觉下沉；所有胶囊（含状态栏统计胶囊、模式切换、品牌字标与标签）围绕同一净内容物理中线对齐。
+  - 顶/底分割线采用物理像素对齐的 `rect_filled`，`≡`、`+`、`×` 及脏标圆点改用矢量几何绘制，状态栏悬浮胶囊阴影改为对称 `offset: [0, 0], blur: CHROME.status_pill_shadow_blur (4)`，经自动化像素扫描验证 5 套主题 × `{100%, 150%}` 全部 60 项实测上下留白差均满足 `<= 1 px`。
+
+

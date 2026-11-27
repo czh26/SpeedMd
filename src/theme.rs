@@ -11,11 +11,258 @@ use std::fmt;
 use std::sync::LazyLock;
 
 // ============================================================================
-// 统一空间骨架尺寸常量（5 套主题严格共用，确保热切换 0.0px 零跳动）
+// 统一空间骨架与顶/底栏尺寸体系（5 套主题严格共用，今后调整尺寸只改 CHROME）
 // ============================================================================
 
-pub const TOP_BAR_H: f32 = 42.0;
-pub const STATUS_BAR_H: f32 = 28.0;
+/// 顶栏、底栏、标签栏与窗口按钮的全部尺寸（单位：逻辑像素 pt）。
+///
+/// 保持 `top_bar_height = 48`、`top_pill_height = 32`、`status_bar_height = 32`、
+/// `status_pill_height = 24` 与 100% / 125% / 150% / 200% DPI 缩放均能整像素对齐。
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct ChromeMetrics {
+    // 栏高与核心胶囊高度
+    pub top_bar_height: f32,
+    pub top_pill_height: f32,
+    pub status_bar_height: f32,
+    pub status_pill_height: f32,
+    pub status_pill_radius: u8,
+    pub status_pill_shadow_blur: u8,
+
+    // 响应式紧凑布局阈值（窗口宽 < compact_width_threshold 时平滑收紧）
+    pub compact_width_threshold: f32,
+    pub compact_sidebar_min_w: f32,
+    pub compact_right_reserve_w: f32,
+    pub compact_tabs_reserve_w: f32,
+
+    // 顶栏左区：品牌徽标 + ThunderMD 字标 + ☰ 菜单按钮
+    pub top_left_pad: f32,
+    pub top_left_pad_compact: f32,
+    pub badge_size: f32,
+    pub badge_size_compact: f32,
+    pub badge_bolt_inset: f32,
+    pub badge_shield_stroke_w: f32,
+    pub badge_wordmark_gap: f32,
+    pub badge_wordmark_gap_compact: f32,
+    pub wordmark_font_size: f32,
+    pub wordmark_font_size_mid: f32,
+    pub wordmark_font_size_compact: f32,
+    pub wordmark_full_avail_w: f32,
+    pub wordmark_mid_avail_w: f32,
+    pub wordmark_safe_gap: f32,
+    pub menu_btn_size: f32,
+    pub menu_btn_size_compact: f32,
+    pub menu_btn_radius: u8,
+    pub menu_right_pad: f32,
+    pub menu_right_pad_compact: f32,
+    pub hamburger_half_w: f32,
+    pub hamburger_line_gap: f32,
+    pub hamburger_stroke_w: f32,
+
+    // 顶栏中区：多文档标签栏 + 新建「+」按钮
+    pub tabs_left_gap: f32,
+    pub tabs_left_gap_compact: f32,
+    pub tabs_right_gap: f32,
+    pub tabs_right_gap_compact: f32,
+    pub tabs_min_region_w: f32,
+    pub tab_gap: f32,
+    pub tab_font_size: f32,
+    pub tab_title_min_w: f32,
+    pub tab_title_min_w_compact: f32,
+    pub tab_title_max_w: f32,
+    pub tab_compact_avail_threshold: f32,
+    pub tab_pad_left: f32,
+    pub tab_pad_right: f32,
+    pub tab_text_close_gap: f32,
+    pub tab_text_clip_pad_x: f32,
+    pub tab_dirty_dot_radius: f32,
+    pub tab_dirty_dot_gap: f32,
+    pub tab_close_width: f32,
+    pub tab_close_hover_inset: f32,
+    pub tab_close_radius: u8,
+    pub tab_close_icon_half: f32,
+    pub tab_close_stroke_w: f32,
+    pub tab_idle_radius: u8,
+    pub tab_active_pill_radius: u8,
+    pub tab_active_box_radius: u8,
+    pub tab_accent_line_w: f32,
+    pub tab_rim_line_w: f32,
+    pub tab_spark_size: [f32; 2],
+    pub tab_drag_line_w: f32,
+    pub tab_drag_line_offset: f32,
+    pub new_tab_btn_width: f32,
+    pub new_tab_hover_inset: f32,
+    pub new_tab_radius: u8,
+    pub new_tab_icon_half: f32,
+    pub new_tab_stroke_w: f32,
+
+    // 顶栏右区：模式切换胶囊 + ⚡ 主题按钮 + 窗口控制三键
+    pub mode_switch_width: f32,
+    pub mode_switch_width_compact: f32,
+    pub mode_font_size: f32,
+    pub mode_font_size_compact: f32,
+    pub mode_inner_inset: f32,
+    pub mode_divider_v_inset: f32,
+    pub mode_pill_outer_radius: u8,
+    pub mode_pill_inner_radius: u8,
+    pub mode_editorial_outer_radius: u8,
+    pub mode_editorial_inner_radius: u8,
+    pub mode_angular_outer_radius: u8,
+    pub mode_angular_inner_radius: u8,
+    pub theme_btn_width: f32,
+    pub theme_btn_width_compact: f32,
+    pub theme_bolt_inset: f32,
+    pub right_section_gap: f32,
+    pub right_section_gap_compact: f32,
+    pub win_btn_width: f32,
+    pub win_btn_width_compact: f32,
+    pub win_btn_gap: f32,
+    pub win_btn_gap_compact: f32,
+    pub win_right_margin: f32,
+    pub win_right_margin_compact: f32,
+    pub sys_right_margin: f32,
+    pub sys_right_margin_compact: f32,
+    pub win_icon_half: f32,
+    pub win_restore_box: f32,
+    pub win_restore_offset: f32,
+    pub win_close_half: f32,
+    pub win_icon_stroke_w: f32,
+    pub top_bar_gradient_line_w: f32,
+
+    // 底栏（状态栏）
+    pub status_font_size: f32,
+    pub status_h_margin: f32,
+    pub status_zone_gap: f32,
+    pub status_split_pad_right: f32,
+    pub status_pill_pad_x: f32,
+    pub status_bolt_size: [f32; 2],
+    pub status_bolt_gap: f32,
+    pub status_dirty_gap: f32,
+    pub status_dirty_dot_radius: f32,
+    pub status_dirty_dot_text_gap: f32,
+    pub status_dirty_reserve_w: f32,
+    pub stats_popup_offset: [f32; 2],
+}
+
+pub const CHROME: ChromeMetrics = ChromeMetrics {
+    top_bar_height: 48.0,
+    top_pill_height: 32.0,
+    status_bar_height: 32.0,
+    status_pill_height: 24.0,
+    status_pill_radius: 12,
+    status_pill_shadow_blur: 4,
+
+    compact_width_threshold: 700.0,
+    compact_sidebar_min_w: 150.0,
+    compact_right_reserve_w: 238.0,
+    compact_tabs_reserve_w: 88.0,
+
+    top_left_pad: 16.0,
+    top_left_pad_compact: 7.0,
+    badge_size: 26.0,
+    badge_size_compact: 20.0,
+    badge_bolt_inset: 2.5,
+    badge_shield_stroke_w: 2.0,
+    badge_wordmark_gap: 9.0,
+    badge_wordmark_gap_compact: 5.0,
+    wordmark_font_size: 17.5,
+    wordmark_font_size_mid: 15.0,
+    wordmark_font_size_compact: 12.5,
+    wordmark_full_avail_w: 112.0,
+    wordmark_mid_avail_w: 94.0,
+    wordmark_safe_gap: 5.0,
+    menu_btn_size: 32.0,
+    menu_btn_size_compact: 26.0,
+    menu_btn_radius: 7,
+    menu_right_pad: 9.0,
+    menu_right_pad_compact: 4.0,
+    hamburger_half_w: 7.5,
+    hamburger_line_gap: 5.0,
+    hamburger_stroke_w: 1.8,
+
+    tabs_left_gap: 10.0,
+    tabs_left_gap_compact: 4.0,
+    tabs_right_gap: 12.0,
+    tabs_right_gap_compact: 4.0,
+    tabs_min_region_w: 80.0,
+    tab_gap: 5.0,
+    tab_font_size: 14.0,
+    tab_title_min_w: 54.0,
+    tab_title_min_w_compact: 34.0,
+    tab_title_max_w: 240.0,
+    tab_compact_avail_threshold: 130.0,
+    tab_pad_left: 12.0,
+    tab_pad_right: 5.0,
+    tab_text_close_gap: 6.0,
+    tab_text_clip_pad_x: 4.0,
+    tab_dirty_dot_radius: 3.3,
+    tab_dirty_dot_gap: 7.0,
+    tab_close_width: 22.0,
+    tab_close_hover_inset: 3.0,
+    tab_close_radius: 5,
+    tab_close_icon_half: 4.0,
+    tab_close_stroke_w: 1.5,
+    tab_idle_radius: 8,
+    tab_active_pill_radius: 9,
+    tab_active_box_radius: 7,
+    tab_accent_line_w: 2.0,
+    tab_rim_line_w: 1.0,
+    tab_spark_size: [9.2, 10.5],
+    tab_drag_line_w: 2.0,
+    tab_drag_line_offset: 2.5,
+    new_tab_btn_width: 30.0,
+    new_tab_hover_inset: 2.0,
+    new_tab_radius: 7,
+    new_tab_icon_half: 5.5,
+    new_tab_stroke_w: 1.7,
+
+    mode_switch_width: 168.0,
+    mode_switch_width_compact: 116.0,
+    mode_font_size: 14.0,
+    mode_font_size_compact: 12.5,
+    mode_inner_inset: 3.0,
+    mode_divider_v_inset: 7.0,
+    mode_pill_outer_radius: 11,
+    mode_pill_inner_radius: 8,
+    mode_editorial_outer_radius: 10,
+    mode_editorial_inner_radius: 7,
+    mode_angular_outer_radius: 9,
+    mode_angular_inner_radius: 6,
+    theme_btn_width: 32.0,
+    theme_btn_width_compact: 26.0,
+    theme_bolt_inset: 6.5,
+    right_section_gap: 9.0,
+    right_section_gap_compact: 4.0,
+    win_btn_width: 34.0,
+    win_btn_width_compact: 26.0,
+    win_btn_gap: 5.0,
+    win_btn_gap_compact: 2.0,
+    win_right_margin: 12.0,
+    win_right_margin_compact: 6.0,
+    sys_right_margin: 14.0,
+    sys_right_margin_compact: 8.0,
+    win_icon_half: 5.2,
+    win_restore_box: 8.6,
+    win_restore_offset: 2.6,
+    win_close_half: 5.0,
+    win_icon_stroke_w: 1.55,
+    top_bar_gradient_line_w: 2.0,
+
+    status_font_size: 13.0,
+    status_h_margin: 14.0,
+    status_zone_gap: 14.0,
+    status_split_pad_right: 10.0,
+    status_pill_pad_x: 12.0,
+    status_bolt_size: [11.5, 14.0],
+    status_bolt_gap: 6.0,
+    status_dirty_gap: 10.0,
+    status_dirty_dot_radius: 3.3,
+    status_dirty_dot_text_gap: 5.5,
+    status_dirty_reserve_w: 72.0,
+    stats_popup_offset: [-14.0, -38.0],
+};
+
+pub const TOP_BAR_H: f32 = CHROME.top_bar_height;
+pub const STATUS_BAR_H: f32 = CHROME.status_bar_height;
 pub const SIDEBAR_DEFAULT_W: f32 = 220.0;
 pub const SIDEBAR_MIN_W: f32 = 170.0;
 pub const SIDEBAR_MAX_W: f32 = 500.0;
@@ -23,9 +270,6 @@ pub const SIDEBAR_HEADER_H: f32 = 34.0;
 /// 中央工作区外框内缩量：05 下用于呈现暗钛壳内嵌磨砂玻璃板；01–04 下与画布同色无缝隐形，
 /// 从而保证 5 套主题的编辑器/预览区折行宽度与文字坐标 1:1 绝对一致。
 pub const PANE_INSET: f32 = 6.0;
-pub const TAB_H: f32 = 28.0;
-pub const TOP_PILL_H: f32 = 28.0;
-pub const STATUS_PILL_H: f32 = 22.0;
 
 // ============================================================================
 // const 颜色推导工具（用于派生 hover / active / selection / disabled / 滚动条）
@@ -293,12 +537,6 @@ pub struct ModeSwitchStyle {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct WindowControlStyle {
     pub corner_radius: u8,
-    pub button_width: f32,
-    pub button_height: f32,
-    pub button_gap: f32,
-    pub section_gap: f32,
-    pub right_margin: f32,
-    pub icon_stroke_width: f32,
     pub bg_idle: Color32,
     pub stroke_idle: Stroke,
     pub icon_idle_fg: Color32,
@@ -651,20 +889,14 @@ const ZEN_HORIZON: ThemeSpec = {
             active_fg: text,
             active_stroke: Stroke::NONE,
             inactive_fg: muted,
-            outer_radius: 10,
-            inner_radius: 7,
+            outer_radius: CHROME.mode_pill_outer_radius,
+            inner_radius: CHROME.mode_pill_inner_radius,
         },
         // 派生规则（01 无界疾风窗口控制按钮）：
         // icon_idle = mix(muted, text, 65%), unfocused = mix(canvas, muted, 58%)
         // hover 采用纯白柔影胶囊 + 珊瑚橙 42% 边框点缀；关闭采用 alerts.caution 鲜明危险红
         window_controls: WindowControlStyle {
-            corner_radius: 10,
-            button_width: 30.0,
-            button_height: TOP_PILL_H,
-            button_gap: 4.0,
-            section_gap: 8.0,
-            right_margin: 10.0,
-            icon_stroke_width: 1.35,
+            corner_radius: CHROME.mode_pill_outer_radius,
             bg_idle: Color32::TRANSPARENT,
             stroke_idle: Stroke::NONE,
             icon_idle_fg: mix(muted, text, 65, 100),
@@ -695,7 +927,12 @@ const ZEN_HORIZON: ThemeSpec = {
             pill_fg: text,
             bolt_color: accent,
             pill_stroke: stroke(1.0, alpha(border, 150)),
-            pill_shadow: soft_shadow,
+            pill_shadow: Shadow {
+                offset: [0, 0],
+                blur: CHROME.status_pill_shadow_blur,
+                spread: 0,
+                color: alpha(hex(0x1C1917), 12),
+            },
         },
         sidebar: SidebarColors {
             bg: canvas,
@@ -867,7 +1104,11 @@ const SCARLET_STREAK: ThemeSpec = {
         window_shadow: Shadow { offset: [0, 8], blur: 20, spread: 0, color: alpha(hex(0x18181B), 24) },
         popup_shadow: soft_shadow,
         badge: BadgeStyle::FlashShield,
-        top_bar_bottom_line: TopBarBottomLine::Gradient { left: accent, right: gold, width: 1.5 },
+        top_bar_bottom_line: TopBarBottomLine::Gradient {
+            left: accent,
+            right: gold,
+            width: CHROME.top_bar_gradient_line_w,
+        },
         active_tab_style: ActiveTabStyle::CrimsonGoldBolt,
         mode_switch: ModeSwitchStyle {
             container_bg: canvas,
@@ -877,19 +1118,13 @@ const SCARLET_STREAK: ThemeSpec = {
             active_fg: on_accent,
             active_stroke: Stroke::NONE,
             inactive_fg: muted,
-            outer_radius: 10,
-            inner_radius: 7,
+            outer_radius: CHROME.mode_pill_outer_radius,
+            inner_radius: CHROME.mode_pill_inner_radius,
         },
         // 派生规则（02 白昼疾影窗口控制按钮）：
         // hover 使用纯白胶囊配绯红 45% 混边；关闭 hover 使用主题绯红 + 35% 神速力金描边
         window_controls: WindowControlStyle {
-            corner_radius: 10,
-            button_width: 30.0,
-            button_height: TOP_PILL_H,
-            button_gap: 4.0,
-            section_gap: 8.0,
-            right_margin: 10.0,
-            icon_stroke_width: 1.35,
+            corner_radius: CHROME.mode_pill_outer_radius,
             bg_idle: Color32::TRANSPARENT,
             stroke_idle: Stroke::NONE,
             icon_idle_fg: mix(muted, text, 60, 100),
@@ -920,7 +1155,12 @@ const SCARLET_STREAK: ThemeSpec = {
             pill_fg: on_accent,
             bolt_color: gold,
             pill_stroke: Stroke::NONE,
-            pill_shadow: soft_shadow,
+            pill_shadow: Shadow {
+                offset: [0, 0],
+                blur: CHROME.status_pill_shadow_blur,
+                spread: 0,
+                color: alpha(hex(0x7F1D1D), 14),
+            },
         },
         sidebar: SidebarColors {
             bg: chrome,
@@ -1112,19 +1352,13 @@ const ATELIER_CONTRAST: ThemeSpec = {
             active_fg: text,
             active_stroke: stroke(1.0, split_line),
             inactive_fg: muted,
-            outer_radius: 9,
-            inner_radius: 6,
+            outer_radius: CHROME.mode_editorial_outer_radius,
+            inner_radius: CHROME.mode_editorial_inner_radius,
         },
         // 派生规则（03 半山书房窗口控制按钮）：
         // 右侧悬停使用暖砂岩胶囊 + 陶土铜 50% 边框；左侧兼备胡桃木暖米字色；关闭使用窑变朱砂红 close_red
         window_controls: WindowControlStyle {
-            corner_radius: 9,
-            button_width: 30.0,
-            button_height: TOP_PILL_H,
-            button_gap: 4.0,
-            section_gap: 8.0,
-            right_margin: 10.0,
-            icon_stroke_width: 1.35,
+            corner_radius: CHROME.mode_editorial_outer_radius,
             bg_idle: Color32::TRANSPARENT,
             stroke_idle: Stroke::NONE,
             icon_idle_fg: mix(muted, text, 65, 100),
@@ -1155,7 +1389,12 @@ const ATELIER_CONTRAST: ThemeSpec = {
             pill_fg: text,
             bolt_color: accent,
             pill_stroke: stroke(1.0, split_line),
-            pill_shadow: soft_shadow,
+            pill_shadow: Shadow {
+                offset: [0, 0],
+                blur: CHROME.status_pill_shadow_blur,
+                spread: 0,
+                color: alpha(left_bg, 10),
+            },
         },
         sidebar: SidebarColors {
             bg: left_bg,
@@ -1340,19 +1579,13 @@ const CARBON_GOLD: ThemeSpec = {
             active_fg: text,
             active_stroke: stroke(1.0, accent),
             inactive_fg: muted,
-            outer_radius: 8,
-            inner_radius: 5,
+            outer_radius: CHROME.mode_angular_outer_radius,
+            inner_radius: CHROME.mode_angular_inner_radius,
         },
         // 派生规则（04 黑金疾电窗口控制按钮）：
         // hover 使用 hover_bg + 76% 透明度香槟金描边，按下图标转为鎏金；关闭采用低饱和暗石榴红 mix(canvas, caution, 52%)
         window_controls: WindowControlStyle {
-            corner_radius: 8,
-            button_width: 30.0,
-            button_height: TOP_PILL_H,
-            button_gap: 4.0,
-            section_gap: 8.0,
-            right_margin: 10.0,
-            icon_stroke_width: 1.35,
+            corner_radius: CHROME.mode_angular_outer_radius,
             bg_idle: Color32::TRANSPARENT,
             stroke_idle: Stroke::NONE,
             icon_idle_fg: mix(muted, text, 65, 100),
@@ -1568,19 +1801,13 @@ const TITANIUM_GLASS: ThemeSpec = {
             active_fg: accent,
             active_stroke: stroke(1.0, top_highlight),
             inactive_fg: muted,
-            outer_radius: 10,
-            inner_radius: 7,
+            outer_radius: CHROME.mode_pill_outer_radius,
+            inner_radius: CHROME.mode_pill_inner_radius,
         },
         // 派生规则（05 钛晶流光窗口控制按钮）：
         // hover 为烟熏玻璃 active_pill + 15% 珍珠银描边 + 上缘 22% 珍珠银高光；关闭使用低饱和烟熏玫瑰钛红 mix(chassis, err_red, 48%)
         window_controls: WindowControlStyle {
-            corner_radius: 10,
-            button_width: 30.0,
-            button_height: TOP_PILL_H,
-            button_gap: 4.0,
-            section_gap: 8.0,
-            right_margin: 10.0,
-            icon_stroke_width: 1.35,
+            corner_radius: CHROME.mode_pill_outer_radius,
             bg_idle: Color32::TRANSPARENT,
             stroke_idle: Stroke::NONE,
             icon_idle_fg: mix(muted, text, 68, 100),
@@ -1617,7 +1844,12 @@ const TITANIUM_GLASS: ThemeSpec = {
             pill_fg: text,
             bolt_color: accent,
             pill_stroke: stroke(1.0, rim_stroke),
-            pill_shadow: glass_shadow,
+            pill_shadow: Shadow {
+                offset: [0, 0],
+                blur: CHROME.status_pill_shadow_blur,
+                spread: 0,
+                color: alpha(hex(0x000000), 45),
+            },
         },
         sidebar: SidebarColors {
             bg: chassis,
@@ -1935,6 +2167,95 @@ pub fn sidebar_visuals(ctx: &egui::Context) -> &'static Visuals {
 }
 
 // ============================================================================
+// 物理像素对齐、字形墨迹垂直居中与矢量图标辅助
+// ============================================================================
+
+pub fn snap_px(v: f32, ppp: f32) -> f32 {
+    (v * ppp).round() / ppp
+}
+
+pub fn snap_stroke_width(logical_w: f32, ppp: f32) -> f32 {
+    (logical_w * ppp).round().max(1.0) / ppp
+}
+
+pub fn snap_line_coord(v: f32, phys_stroke_px: f32, ppp: f32) -> f32 {
+    let px = v * ppp;
+    let snapped = if phys_stroke_px as i32 % 2 != 0 {
+        px.floor() + 0.5
+    } else {
+        px.round()
+    };
+    snapped / ppp
+}
+
+/// 在物理像素区间 `[content_top_px, content_bot_px]` 内垂直居中高度为 `span_logical` 的区域，
+/// 返回对齐到物理像素网格的逻辑 `(top, bottom)`（上下物理像素差至多 1 px）。
+pub fn snap_centered_span_px(content_top_px: f32, content_bot_px: f32, span_logical: f32, ppp: f32) -> (f32, f32) {
+    let span_px = (span_logical * ppp).round().max(1.0);
+    let pad_top_px = ((content_bot_px - content_top_px - span_px).max(0.0) * 0.5).floor();
+    let top_px = content_top_px + pad_top_px;
+    (top_px / ppp, (top_px + span_px) / ppp)
+}
+
+/// 以字形真实墨迹包围盒（`Galley::mesh_bounds`）在 `[content_top_px, content_bot_px]` 内垂直居中，
+/// 消除 `Segoe UI` / 微软雅黑排版行距不对称导致的视觉下沉，并对齐到物理像素。
+pub fn galley_ink_centered_pos_y(content_top_px: f32, content_bot_px: f32, galley: &egui::Galley, ppp: f32) -> f32 {
+    if galley.mesh_bounds.is_finite() && galley.mesh_bounds.height() > 0.0 {
+        let ink_min_px = (galley.mesh_bounds.min.y * ppp).round();
+        let ink_max_px = (galley.mesh_bounds.max.y * ppp).round();
+        let ink_h_px = (ink_max_px - ink_min_px).max(1.0);
+        let pad_top_px = ((content_bot_px - content_top_px - ink_h_px) * 0.5).round();
+        (content_top_px + pad_top_px - ink_min_px).round() / ppp
+    } else {
+        let h_px = (galley.size().y * ppp).round();
+        let pad_top_px = ((content_bot_px - content_top_px - h_px) * 0.5).round();
+        (content_top_px + pad_top_px).round() / ppp
+    }
+}
+
+/// 绘制物理像素对齐的三条横线汉堡菜单图标（`≡`）。
+pub fn paint_hamburger_icon(painter: &Painter, center: Pos2, color: Color32) {
+    let ppp = painter.pixels_per_point().max(1.0);
+    let phys_px = (CHROME.hamburger_stroke_w * ppp).round().max(1.0);
+    let stroke = Stroke::new(phys_px / ppp, color);
+    let cx = snap_px(center.x, ppp);
+    let cy = snap_px(center.y, ppp);
+    let x0 = snap_px(cx - CHROME.hamburger_half_w, ppp);
+    let x1 = snap_px(cx + CHROME.hamburger_half_w, ppp);
+    let dy_px = (CHROME.hamburger_line_gap * ppp).round().max(1.0);
+    for mul in [-1.0_f32, 0.0, 1.0] {
+        let y = snap_line_coord(cy + mul * dy_px / ppp, phys_px, ppp);
+        painter.line_segment([pos2(x0, y), pos2(x1, y)], stroke);
+    }
+}
+
+/// 绘制物理像素对齐的 `+` 新建图标（替代字体基线偏低的字符 `+`）。
+pub fn paint_plus_icon(painter: &Painter, center: Pos2, color: Color32) {
+    let ppp = painter.pixels_per_point().max(1.0);
+    let phys_px = (CHROME.new_tab_stroke_w * ppp).round().max(1.0);
+    let stroke = Stroke::new(phys_px / ppp, color);
+    let cx = snap_px(center.x, ppp);
+    let cy = snap_px(center.y, ppp);
+    let half = (CHROME.new_tab_icon_half * ppp).round().max(1.0) / ppp;
+    let x_mid = snap_line_coord(cx, phys_px, ppp);
+    let y_mid = snap_line_coord(cy, phys_px, ppp);
+    painter.line_segment([pos2(cx - half, y_mid), pos2(cx + half, y_mid)], stroke);
+    painter.line_segment([pos2(x_mid, cy - half), pos2(x_mid, cy + half)], stroke);
+}
+
+/// 绘制物理像素对齐的对角线 `×` 图标（供标签关闭钮与窗口关闭钮共用）。
+pub fn paint_close_x_icon(painter: &Painter, center: Pos2, half_logical: f32, stroke_logical: f32, color: Color32) {
+    let ppp = painter.pixels_per_point().max(1.0);
+    let sw = snap_stroke_width(stroke_logical, ppp);
+    let stroke = Stroke::new(sw, color);
+    let cx = snap_px(center.x, ppp);
+    let cy = snap_px(center.y, ppp);
+    let r = snap_px(half_logical, ppp);
+    painter.line_segment([pos2(cx - r, cy - r), pos2(cx + r, cy + r)], stroke);
+    painter.line_segment([pos2(cx + r, cy - r), pos2(cx - r, cy + r)], stroke);
+}
+
+// ============================================================================
 // 共享矢量绘制辅助（闪电徽标 / 02 圆盾金电徽章 / 渐变速度线 / 2px 点线）
 // ============================================================================
 
@@ -1964,13 +2285,13 @@ pub fn paint_bolt(painter: &Painter, rect: Rect, color: Color32) {
 pub fn paint_brand_badge(painter: &Painter, rect: Rect, spec: &ThemeSpec) {
     match spec.badge {
         BadgeStyle::GeometricBolt => {
-            paint_bolt(painter, rect.shrink(2.0), spec.accent);
+            paint_bolt(painter, rect.shrink(CHROME.badge_bolt_inset), spec.accent);
         }
         BadgeStyle::FlashShield => {
             let center = rect.center();
             let radius = rect.width().min(rect.height()) * 0.46;
             painter.circle_filled(center, radius, spec.accent);
-            painter.circle_stroke(center, radius, Stroke::new(1.8, spec.secondary_accent));
+            painter.circle_stroke(center, radius, Stroke::new(CHROME.badge_shield_stroke_w, spec.secondary_accent));
             let inner = Rect::from_center_size(center, vec2(radius * 1.32, radius * 1.42));
             paint_bolt(painter, inner, spec.secondary_accent);
         }

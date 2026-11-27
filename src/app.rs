@@ -14,8 +14,8 @@ use crate::sidebar::{SidebarAction, SidebarState};
 use crate::stats::{self, StatsOptions};
 use crate::tabs::{self, TabAction};
 use crate::theme::{
-    self, DividerStyle, StatusBarStyle, ThemeId, TopBarBottomLine, PANE_INSET, SIDEBAR_DEFAULT_W, STATUS_BAR_H,
-    STATUS_PILL_H, TOP_BAR_H,
+    self, DividerStyle, StatusBarStyle, ThemeId, TopBarBottomLine, CHROME, PANE_INSET, SIDEBAR_DEFAULT_W,
+    STATUS_BAR_H, TOP_BAR_H,
 };
 use crate::window_frame::{
     self, WindowControlBtn, MANUAL_RIGHT_RESIZE_EDGE_PX, RESIZE_CORNER_PX, RESIZE_EDGE_PX,
@@ -152,7 +152,10 @@ impl MdApp {
         }
         theme::apply(&cc.egui_ctx, settings.theme);
 
-        settings.ui_zoom = settings.ui_zoom.clamp(0.75, 2.0);
+        if let Some(z) = winutil::app_env("ZOOM").and_then(|s| s.trim().parse::<f32>().ok()) {
+            settings.ui_zoom = z;
+        }
+        settings.ui_zoom = settings.ui_zoom.clamp(0.75, 2.5);
         cc.egui_ctx.set_zoom_factor(settings.ui_zoom);
 
         let keymap = Keymap::from_overrides(&settings.keybindings);
@@ -942,15 +945,28 @@ impl MdApp {
         let spec = theme::current(&ctx);
         let (top_rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), TOP_BAR_H), Sense::hover());
 
+        let ppp = ctx.pixels_per_point().max(1.0);
         let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
         let focused = if self.shot.is_some() { !self.test_unfocused } else { ctx.input(|i| i.focused) };
+        let top_decor_px = if !self.use_system_titlebar_active && !self.dwm_rounded && !maximized {
+            (1.0 * ppp).round().max(1.0)
+        } else {
+            0.0
+        };
+        let bot_decor_px = match spec.top_bar_bottom_line {
+            TopBarBottomLine::None => 0.0,
+            TopBarBottomLine::Solid { .. } => (1.0 * ppp).round().max(1.0),
+            TopBarBottomLine::Gradient { width, .. } => (width * ppp).round().max(1.0),
+        };
         let layout = window_frame::compute_top_bar_layout(
             top_rect,
             self.settings.sidebar_open,
             self.sidebar_width,
             !self.use_system_titlebar_active,
             maximized,
-            &spec.window_controls,
+            top_decor_px,
+            bot_decor_px,
+            ppp,
         );
 
         // 最先注册顶栏空白区域拖拽/双击/右键热区（未最大化时避开外围 5px 缩放感应条），后续子按钮与标签会自动覆盖其各自区域
@@ -973,26 +989,40 @@ impl MdApp {
             ui.painter().rect_filled(top_rect, 0.0, spec.top_bar_bg);
         }
 
-        // 底缘线条（01 隐藏、02 红→金 1.5px 渐隐速度线、03–05 1px 结构线）
+        // 底缘线条（按物理像素边界贴底绘制，避免 125%/150% 缩放下半像素渗色）
+        let bot_px = (top_rect.bottom() * ppp).round();
+        let line_top = (bot_px - bot_decor_px) / ppp;
+        let line_bot = bot_px / ppp;
         match spec.top_bar_bottom_line {
             TopBarBottomLine::None => {}
             TopBarBottomLine::Solid { color, left_override } => {
-                let y = top_rect.bottom() - 0.5;
                 if split_left_active && let Some(lc) = left_override {
-                    let div_x = top_rect.left() + layout.split_bg_width;
-                    ui.painter().hline(top_rect.left()..=div_x, y, Stroke::new(1.0, lc));
-                    ui.painter().hline(div_x..=top_rect.right(), y, Stroke::new(1.0, color));
+                    let div_x = theme::snap_px(top_rect.left() + layout.split_bg_width, ppp);
+                    ui.painter().rect_filled(
+                        Rect::from_min_max(pos2(top_rect.left(), line_top), pos2(div_x, line_bot)),
+                        0.0,
+                        lc,
+                    );
+                    ui.painter().rect_filled(
+                        Rect::from_min_max(pos2(div_x, line_top), pos2(top_rect.right(), line_bot)),
+                        0.0,
+                        color,
+                    );
                 } else {
-                    ui.painter().hline(top_rect.x_range(), y, Stroke::new(1.0, color));
+                    ui.painter().rect_filled(
+                        Rect::from_min_max(pos2(top_rect.left(), line_top), pos2(top_rect.right(), line_bot)),
+                        0.0,
+                        color,
+                    );
                 }
             }
-            TopBarBottomLine::Gradient { left, right, width } => {
+            TopBarBottomLine::Gradient { left, right, .. } => {
                 theme::paint_horizontal_gradient_line(
                     ui.painter(),
                     top_rect.left(),
                     top_rect.right(),
-                    top_rect.bottom() - width,
-                    width,
+                    line_top,
+                    (line_bot - line_top).max(1.0 / ppp),
                     left,
                     right,
                 );
@@ -1004,39 +1034,42 @@ impl MdApp {
         let left_hover = if split_left_active { spec.sidebar.hover_bg } else { spec.hover_bg };
 
         theme::paint_brand_badge(ui.painter(), layout.badge_rect, spec);
-        let avail_wordmark_w = (layout.menu_btn_rect.left() - 5.0 - layout.wordmark_pos.x).max(0.0);
-        let wordmark_size = if avail_wordmark_w >= 105.0 {
-            15.5
-        } else if avail_wordmark_w >= 82.0 {
-            14.0
-        } else {
-            12.5
-        };
+        let avail_wordmark_w = (layout.menu_btn_rect.left() - CHROME.wordmark_safe_gap - layout.wordmark_pos.x).max(0.0);
+        let mut candidates = [
+            CHROME.wordmark_font_size,
+            CHROME.wordmark_font_size_mid,
+            CHROME.wordmark_font_size_compact,
+        ];
+        if avail_wordmark_w < CHROME.wordmark_full_avail_w {
+            candidates[0] = candidates[1];
+        }
+        if avail_wordmark_w < CHROME.wordmark_mid_avail_w {
+            candidates[0] = candidates[2];
+            candidates[1] = candidates[2];
+        }
+        let mut wm_galley = ui.fonts_mut(|f| {
+            f.layout_no_wrap(APP_NAME.into(), FontId::new(candidates[0], bold_family()), left_fg)
+        });
+        for &sz in &candidates[1..] {
+            if wm_galley.size().x <= avail_wordmark_w {
+                break;
+            }
+            wm_galley = ui.fonts_mut(|f| f.layout_no_wrap(APP_NAME.into(), FontId::new(sz, bold_family()), left_fg));
+        }
+        let wm_y = theme::galley_ink_centered_pos_y(layout.content_top_px, layout.content_bot_px, &wm_galley, ppp);
         let wordmark_clip = Rect::from_min_max(top_rect.min, pos2(layout.menu_btn_rect.left() - 3.0, top_rect.max.y));
-        ui.painter().with_clip_rect(wordmark_clip).text(
-            layout.wordmark_pos,
-            Align2::LEFT_CENTER,
-            APP_NAME,
-            FontId::new(wordmark_size, bold_family()),
-            left_fg,
-        );
+        ui.painter()
+            .with_clip_rect(wordmark_clip)
+            .galley(pos2(theme::snap_px(layout.wordmark_pos.x, ppp), wm_y), wm_galley, left_fg);
 
         let menu_btn_rect = layout.menu_btn_rect;
         let menu_resp = ui.interact(menu_btn_rect, ui.make_persistent_id("top_hamburger_menu"), Sense::click());
         if menu_resp.hovered() {
-            ui.painter().rect_filled(menu_btn_rect, 6.0, left_hover);
+            ui.painter()
+                .rect_filled(menu_btn_rect, CHROME.menu_btn_radius, left_hover);
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
         }
-        let bar_stroke = Stroke::new(1.6, left_fg);
-        for dy in [-4.5_f32, 0.0, 4.5] {
-            ui.painter().line_segment(
-                [
-                    pos2(menu_btn_rect.center().x - 6.5, menu_btn_rect.center().y + dy),
-                    pos2(menu_btn_rect.center().x + 6.5, menu_btn_rect.center().y + dy),
-                ],
-                bar_stroke,
-            );
-        }
+        theme::paint_hamburger_icon(ui.painter(), menu_btn_rect.center(), left_fg);
 
         let menu_open_cmd = if self.open_menu_once {
             self.open_menu_once = false;
@@ -1187,7 +1220,7 @@ impl MdApp {
         menu_resp.on_hover_text("菜单（文件 / 编辑 / 视图 / 主题 / 设置 / 帮助）");
 
         // 右区：分段模式胶囊（编辑 | 分屏 | 预览）+ ⚡ 主题切换钮 + 自定义窗口三按钮
-        self.paint_mode_switch(ui, layout.mode_rect, spec);
+        self.paint_mode_switch(ui, layout.mode_rect, spec, layout.content_top_px, layout.content_bot_px);
         self.theme_toggle_button_at(ui, layout.theme_btn_rect);
         if let Some(btns) = &layout.window_buttons {
             let split_x = split_left_active.then_some(top_rect.left() + layout.split_bg_width);
@@ -1213,7 +1246,7 @@ impl MdApp {
                     .layout(egui::Layout::left_to_right(Align::Center)),
             );
             center_ui.set_clip_rect(ui.clip_rect().intersect(layout.tabs_rect));
-            occupied_tabs_right = self.tab_bar(&mut center_ui, top_rect.bottom());
+            occupied_tabs_right = self.tab_bar(&mut center_ui, top_rect.bottom(), layout.pill_top, layout.pill_bot);
         }
 
         // 处理顶栏空白区域拖动、双击最大化/还原、仿系统右键菜单
@@ -1268,9 +1301,19 @@ impl MdApp {
         }
     }
 
-    fn paint_mode_switch(&mut self, ui: &mut egui::Ui, rect: Rect, spec: &theme::ThemeSpec) {
+    fn paint_mode_switch(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: Rect,
+        spec: &theme::ThemeSpec,
+        content_top_px: f32,
+        content_bot_px: f32,
+    ) {
         let ms = &spec.mode_switch;
         let is_manual = self.doc().is_manual;
+        let ppp = ui.ctx().pixels_per_point().max(1.0);
+        let compact = rect.width() <= CHROME.mode_switch_width_compact + 2.0;
+        let font_sz = if compact { CHROME.mode_font_size_compact } else { CHROME.mode_font_size };
         ui.painter().add(ms.container_shadow.as_shape(rect, ms.outer_radius));
         ui.painter().rect_filled(rect, ms.outer_radius, ms.container_bg);
         ui.painter().rect_stroke(rect, ms.outer_radius, ms.container_stroke, StrokeKind::Inside);
@@ -1287,7 +1330,7 @@ impl MdApp {
             let resp = ui.interact(seg_r, ui.make_persistent_id(("mode_seg", label)), sense);
             let active = !is_manual && self.settings.mode == *mode_val;
 
-            let inner_r = seg_r.shrink(2.5);
+            let inner_r = seg_r.shrink(CHROME.mode_inner_inset);
             if active {
                 ui.painter().rect_filled(inner_r, ms.inner_radius, ms.active_bg);
                 ui.painter().rect_stroke(inner_r, ms.inner_radius, ms.active_stroke, StrokeKind::Inside);
@@ -1302,7 +1345,7 @@ impl MdApp {
                 if !active && !prev_active {
                     ui.painter().vline(
                         seg_r.left(),
-                        (rect.top() + 6.0)..=(rect.bottom() - 6.0),
+                        (rect.top() + CHROME.mode_divider_v_inset)..=(rect.bottom() - CHROME.mode_divider_v_inset),
                         Stroke::new(1.0, spec.border),
                     );
                 }
@@ -1315,8 +1358,11 @@ impl MdApp {
             } else {
                 ms.inactive_fg
             };
-            let font = if active { FontId::new(12.5, bold_family()) } else { FontId::proportional(12.5) };
-            ui.painter().text(seg_r.center(), Align2::CENTER_CENTER, label, font, fg);
+            let font = if active { FontId::new(font_sz, bold_family()) } else { FontId::proportional(font_sz) };
+            let label_galley = ui.fonts_mut(|f| f.layout_no_wrap((*label).to_string(), font, fg));
+            let label_x = theme::snap_px(seg_r.center().x - label_galley.size().x * 0.5, ppp);
+            let label_y = theme::galley_ink_centered_pos_y(content_top_px, content_bot_px, &label_galley, ppp);
+            ui.painter().galley(pos2(label_x, label_y), label_galley, fg);
             if !is_manual && resp.clicked() {
                 self.settings.mode = *mode_val;
             }
@@ -1341,7 +1387,7 @@ impl MdApp {
         ui.painter().add(ms.container_shadow.as_shape(rect, ms.outer_radius));
         ui.painter().rect_filled(rect, ms.outer_radius, bg);
         ui.painter().rect_stroke(rect, ms.outer_radius, ms.container_stroke, StrokeKind::Inside);
-        theme::paint_bolt(ui.painter(), rect.shrink(6.0), spec.accent);
+        theme::paint_bolt(ui.painter(), rect.shrink(CHROME.theme_bolt_inset), spec.accent);
 
         if resp.clicked() {
             self.toggle_day_night(&ctx);
@@ -1421,8 +1467,8 @@ impl MdApp {
         ));
     }
 
-    fn tab_bar(&mut self, ui: &mut egui::Ui, top_bar_bottom: f32) -> f32 {
-        let (action_opt, occupied_right) = tabs::show(ui, top_bar_bottom, &self.docs, self.active);
+    fn tab_bar(&mut self, ui: &mut egui::Ui, top_bar_bottom: f32, pill_top: f32, pill_bot: f32) -> f32 {
+        let (action_opt, occupied_right) = tabs::show(ui, top_bar_bottom, pill_top, pill_bot, &self.docs, self.active);
         let Some(action) = action_opt else { return occupied_right };
         match action {
             TabAction::Select(i) => {
@@ -1457,6 +1503,8 @@ impl MdApp {
         let spec = theme::current(&ctx);
         let (bar_rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), STATUS_BAR_H), Sense::hover());
 
+        let ppp = ctx.pixels_per_point().max(1.0);
+        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
         let (base_bg, top_border) = match spec.status_bar {
             StatusBarStyle::FloatingPill { bar_bg, top_border, .. } => (bar_bg, top_border),
             StatusBarStyle::FlushTelemetry { bar_bg, top_border, .. } => (bar_bg, Some(top_border)),
@@ -1472,28 +1520,44 @@ impl MdApp {
         } else {
             ui.painter().rect_filled(bar_rect, 0.0, base_bg);
         }
+
+        // 扣除顶部分割线与 Win10 非圆角 1px 底部外框后的物理像素净内容区 [sb_top_px, sb_bot_px]
+        let top_decor_px = if top_border.is_some() { (1.0 * ppp).round().max(1.0) } else { 0.0 };
+        let bot_decor_px = if !self.use_system_titlebar_active && !self.dwm_rounded && !maximized {
+            (1.0 * ppp).round().max(1.0)
+        } else {
+            0.0
+        };
+        let bar_top_px = (bar_rect.top() * ppp).round();
+        let bar_bot_px = (bar_rect.bottom() * ppp).round();
+        let sb_top_px = bar_top_px + top_decor_px;
+        let sb_bot_px = (bar_bot_px - bot_decor_px).max(sb_top_px + 1.0);
+        let sb_center_y = theme::snap_px((sb_top_px + sb_bot_px) * 0.5 / ppp, ppp);
+
         if let Some(tb) = top_border {
-            ui.painter().hline(bar_rect.x_range(), bar_rect.top() + 0.5, Stroke::new(1.0, tb));
+            ui.painter().rect_filled(
+                Rect::from_min_max(pos2(bar_rect.left(), bar_top_px / ppp), pos2(bar_rect.right(), sb_top_px / ppp)),
+                0.0,
+                tb,
+            );
         }
 
         let left_fg = if split_left_active { spec.sidebar.muted_fg } else { spec.muted_fg };
+        let sb_font = FontId::proportional(CHROME.status_font_size);
         let doc = self.doc();
 
         if doc.is_manual {
             let left_text = "内置语法说明书 · 只读 · Esc 清空搜索 · 支持复制与一键插入到当前文档";
             let right_text = format!("{} 个分类 · {} 条语法", self.manual.category_count(), self.manual.entry_count());
-            ui.painter().text(
-                pos2(bar_rect.left() + 12.0, bar_rect.center().y),
-                Align2::LEFT_CENTER,
-                left_text,
-                FontId::proportional(11.5),
-                left_fg,
-            );
-            ui.painter().text(
-                pos2(bar_rect.right() - 12.0, bar_rect.center().y),
-                Align2::RIGHT_CENTER,
-                right_text,
-                FontId::proportional(11.5),
+            let lg = ui.fonts_mut(|f| f.layout_no_wrap(left_text.into(), sb_font.clone(), left_fg));
+            let rg = ui.fonts_mut(|f| f.layout_no_wrap(right_text, sb_font, spec.muted_fg));
+            let ly = theme::galley_ink_centered_pos_y(sb_top_px, sb_bot_px, &lg, ppp);
+            let ry = theme::galley_ink_centered_pos_y(sb_top_px, sb_bot_px, &rg, ppp);
+            ui.painter()
+                .galley(pos2(theme::snap_px(bar_rect.left() + CHROME.status_h_margin, ppp), ly), lg, left_fg);
+            ui.painter().galley(
+                pos2(theme::snap_px(bar_rect.right() - CHROME.status_h_margin - rg.size().x, ppp), ry),
+                rg,
                 spec.muted_fg,
             );
             return;
@@ -1521,26 +1585,29 @@ impl MdApp {
             )
         };
 
-        let pill_font = FontId::proportional(11.5);
-        let text_galley = ui.fonts_mut(|f| f.layout_no_wrap(stats_text.clone(), pill_font.clone(), spec.text_fg));
-        let bolt_w = 12.0;
-        let pill_pad_x = 10.0;
-        let pill_w = pill_pad_x * 2.0 + bolt_w + 5.0 + text_galley.size().x;
-        let pill_rect = Rect::from_min_size(
-            pos2(bar_rect.right() - 12.0 - pill_w, bar_rect.center().y - STATUS_PILL_H * 0.5),
-            vec2(pill_w, STATUS_PILL_H),
-        );
+        let text_galley = ui.fonts_mut(|f| f.layout_no_wrap(stats_text.clone(), sb_font.clone(), spec.text_fg));
+        let bolt_w = CHROME.status_bolt_size[0];
+        let pill_pad_x = CHROME.status_pill_pad_x;
+        let pill_w = pill_pad_x * 2.0 + bolt_w + CHROME.status_bolt_gap + text_galley.size().x;
+        let (pill_top, pill_bot) =
+            theme::snap_centered_span_px(sb_top_px, sb_bot_px, CHROME.status_pill_height, ppp);
+        let pill_right = theme::snap_px(bar_rect.right() - CHROME.status_h_margin, ppp);
+        let pill_left = theme::snap_px(pill_right - pill_w, ppp);
+        let pill_rect = Rect::from_min_max(pos2(pill_left, pill_top), pos2(pill_right, pill_bot));
 
         let left_max_x = if split_left_active {
-            (bar_rect.left() + left_zone_w - 8.0).min(pill_rect.left() - 12.0)
+            (bar_rect.left() + left_zone_w - CHROME.status_split_pad_right).min(pill_rect.left() - CHROME.status_zone_gap)
         } else {
-            pill_rect.left() - 12.0
+            pill_rect.left() - CHROME.status_zone_gap
         }
         .max(bar_rect.left());
         let left_clip = Rect::from_min_max(bar_rect.min, pos2(left_max_x, bar_rect.max.y));
-        let avail_left_w = (left_max_x - (bar_rect.left() + 12.0) - if dirty { 62.0 } else { 4.0 }).max(24.0);
+        let avail_left_w = (left_max_x
+            - (bar_rect.left() + CHROME.status_h_margin)
+            - if dirty { CHROME.status_dirty_reserve_w } else { 4.0 })
+            .max(24.0);
         let display_path = if split_left_active
-            && ui.fonts_mut(|f| f.layout_no_wrap(full_path.clone(), pill_font.clone(), left_fg)).size().x > avail_left_w
+            && ui.fonts_mut(|f| f.layout_no_wrap(full_path.clone(), sb_font.clone(), left_fg)).size().x > avail_left_w
             && let Some(p) = &doc.path
         {
             let name = p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -1549,7 +1616,7 @@ impl MdApp {
                 .and_then(|par| par.file_name())
                 .map(|s| format!("…\\{}\\{name}", s.to_string_lossy()))
                 .unwrap_or_else(|| name.clone());
-            if ui.fonts_mut(|f| f.layout_no_wrap(with_parent.clone(), pill_font.clone(), left_fg)).size().x <= avail_left_w {
+            if ui.fonts_mut(|f| f.layout_no_wrap(with_parent.clone(), sb_font.clone(), left_fg)).size().x <= avail_left_w {
                 with_parent
             } else {
                 format!("…\\{name}")
@@ -1559,24 +1626,24 @@ impl MdApp {
         };
 
         let clipped = ui.painter().with_clip_rect(left_clip);
-        let path_galley = ui.fonts_mut(|f| f.layout_no_wrap(display_path, pill_font.clone(), left_fg));
-        let path_x = bar_rect.left() + 12.0;
-        clipped.galley(pos2(path_x, bar_rect.center().y - path_galley.size().y * 0.5), path_galley.clone(), left_fg);
+        let path_galley = ui.fonts_mut(|f| f.layout_no_wrap(display_path, sb_font.clone(), left_fg));
+        let path_x = theme::snap_px(bar_rect.left() + CHROME.status_h_margin, ppp);
+        let path_y = theme::galley_ink_centered_pos_y(sb_top_px, sb_bot_px, &path_galley, ppp);
+        clipped.galley(pos2(path_x, path_y), path_galley.clone(), left_fg);
         if dirty {
-            clipped.text(
-                pos2(path_x + path_galley.size().x + 10.0, bar_rect.center().y),
-                Align2::LEFT_CENTER,
-                "● 未保存",
-                pill_font.clone(),
-                spec.semantic.dirty_dot,
-            );
+            let dot_cx = path_x + path_galley.size().x + CHROME.status_dirty_gap + CHROME.status_dirty_dot_radius;
+            clipped.circle_filled(pos2(dot_cx, sb_center_y), CHROME.status_dirty_dot_radius, spec.semantic.dirty_dot);
+            let dirty_galley = ui.fonts_mut(|f| f.layout_no_wrap("未保存".into(), sb_font, spec.semantic.dirty_dot));
+            let dirty_y = theme::galley_ink_centered_pos_y(sb_top_px, sb_bot_px, &dirty_galley, ppp);
+            let dirty_x = theme::snap_px(dot_cx + CHROME.status_dirty_dot_radius + CHROME.status_dirty_dot_text_gap, ppp);
+            clipped.galley(pos2(dirty_x, dirty_y), dirty_galley, spec.semantic.dirty_dot);
         }
         if doc.path.is_some() {
             ui.interact(left_clip, ui.make_persistent_id("status_path_hover"), Sense::hover())
                 .on_hover_text(full_path);
         }
 
-        let (pill_fg, bolt_col) = match spec.status_bar {
+        let (_is_floating_pill, pill_fg, bolt_col) = match spec.status_bar {
             StatusBarStyle::FloatingPill {
                 pill_bg,
                 pill_fg,
@@ -1585,26 +1652,24 @@ impl MdApp {
                 pill_shadow,
                 ..
             } => {
-                ui.painter().add(pill_shadow.as_shape(pill_rect, 11));
-                ui.painter().rect_filled(pill_rect, 11.0, pill_bg);
-                ui.painter().rect_stroke(pill_rect, 11.0, pill_stroke, StrokeKind::Inside);
-                (pill_fg, bolt_color)
+                ui.painter().add(pill_shadow.as_shape(pill_rect, CHROME.status_pill_radius));
+                ui.painter().rect_filled(pill_rect, CHROME.status_pill_radius, pill_bg);
+                ui.painter()
+                    .rect_stroke(pill_rect, CHROME.status_pill_radius, pill_stroke, StrokeKind::Inside);
+                (true, pill_fg, bolt_color)
             }
-            StatusBarStyle::FlushTelemetry { bolt_color, text_color, .. } => (text_color, bolt_color),
+            StatusBarStyle::FlushTelemetry { bolt_color, text_color, .. } => (false, text_color, bolt_color),
         };
 
-        let bolt_rect = Rect::from_min_size(
-            pos2(pill_rect.left() + pill_pad_x, pill_rect.center().y - 6.0),
-            vec2(10.0, 12.0),
-        );
+        // 左右底栏所有文字与 ⚡ 统一按 [sb_top_px, sb_bot_px] 净内容中心线居中对齐
+        let (bolt_top, bolt_bot) =
+            theme::snap_centered_span_px(sb_top_px, sb_bot_px, CHROME.status_bolt_size[1], ppp);
+        let bolt_x = theme::snap_px(pill_rect.left() + pill_pad_x, ppp);
+        let bolt_rect = Rect::from_min_max(pos2(bolt_x, bolt_top), pos2(bolt_x + bolt_w, bolt_bot));
         theme::paint_bolt(ui.painter(), bolt_rect, bolt_col);
-        ui.painter().text(
-            pos2(bolt_rect.right() + 5.0, pill_rect.center().y),
-            Align2::LEFT_CENTER,
-            stats_text,
-            pill_font,
-            pill_fg,
-        );
+        let stats_x = theme::snap_px(bolt_rect.right() + CHROME.status_bolt_gap, ppp);
+        let stats_y = theme::galley_ink_centered_pos_y(sb_top_px, sb_bot_px, &text_galley, ppp);
+        ui.painter().galley(pos2(stats_x, stats_y), text_galley, pill_fg);
 
         let r = ui.interact(pill_rect, ui.make_persistent_id("status_stats_pill"), Sense::click());
         if r.hovered() {
@@ -2163,7 +2228,7 @@ impl MdApp {
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
-            .anchor(Align2::RIGHT_BOTTOM, [-12.0, -34.0])
+            .anchor(Align2::RIGHT_BOTTOM, CHROME.stats_popup_offset)
             .show(ctx, |ui| {
                 ui.weak(format!("统计范围：{title_note}（已排除 Front Matter）"));
                 ui.add_space(4.0);

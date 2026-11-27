@@ -2,9 +2,9 @@
 
 use crate::document::Document;
 use crate::markdown::bold_family;
-use crate::theme::{self, ActiveTabStyle, TAB_H};
+use crate::theme::{self, ActiveTabStyle, CHROME};
 use eframe::egui::{
-    self, pos2, vec2, Align2, Color32, CornerRadius, CursorIcon, FontId, Id, Rect, Sense, Stroke, StrokeKind,
+    self, pos2, vec2, Color32, CornerRadius, CursorIcon, FontId, Id, Rect, Sense, Stroke, StrokeKind,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -48,11 +48,24 @@ pub fn tab_titles(docs: &[Document]) -> Vec<String> {
         .collect()
 }
 
-pub fn show(ui: &mut egui::Ui, top_bar_bottom: f32, docs: &[Document], active: usize) -> (Option<TabAction>, f32) {
+pub fn show(
+    ui: &mut egui::Ui,
+    top_bar_bottom: f32,
+    pill_top: f32,
+    pill_bot: f32,
+    docs: &[Document],
+    active: usize,
+) -> (Option<TabAction>, f32) {
     let mut action: Option<TabAction> = None;
     let titles = tab_titles(docs);
     let spec = theme::current(ui.ctx());
     let tc = &spec.tabs;
+    let ppp = ui.ctx().pixels_per_point().max(1.0);
+    let pill_h = (pill_bot - pill_top).max(1.0);
+    let pill_top_px = (pill_top * ppp).round();
+    let pill_bot_px = (pill_bot * ppp).round();
+    let pill_center_y = theme::snap_px((pill_top + pill_bot) * 0.5, ppp);
+    let slot_h = ui.available_height().max(pill_h);
 
     let drag_id = Id::unique("tabs_drag_state");
     let mut drag = ui
@@ -60,7 +73,11 @@ pub fn show(ui: &mut egui::Ui, top_bar_bottom: f32, docs: &[Document], active: u
         .data_mut(|d| d.get_temp::<DragState>(drag_id).map(|s| s.dragging_uid).unwrap_or(None));
     let mut rects: Vec<Rect> = Vec::with_capacity(docs.len());
     let avail_w = ui.available_width();
-    let min_title_w = if avail_w < 120.0 { 32.0 } else { 48.0 };
+    let min_title_w = if avail_w < CHROME.tab_compact_avail_threshold {
+        CHROME.tab_title_min_w_compact
+    } else {
+        CHROME.tab_title_min_w
+    };
     let mut occupied_right_x = ui.max_rect().left();
 
     egui::ScrollArea::horizontal()
@@ -72,28 +89,35 @@ pub fn show(ui: &mut egui::Ui, top_bar_bottom: f32, docs: &[Document], active: u
         })
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
         .show(ui, |ui| {
-            ui.horizontal_centered(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                let font = FontId::proportional(13.0);
-                let active_font = FontId::new(13.0, bold_family());
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = CHROME.tab_gap;
+                let font = FontId::proportional(CHROME.tab_font_size);
+                let active_font = FontId::new(CHROME.tab_font_size, bold_family());
 
                 for (i, doc) in docs.iter().enumerate() {
                     let is_active = i == active;
-                    let prefix = if doc.dirty { "● " } else { "" };
-                    let label = format!("{prefix}{}", titles[i]);
-                    let measure_font = if is_active { &active_font } else { &font };
-                    let galley = ui.fonts_mut(|f| f.layout_no_wrap(label, measure_font.clone(), tc.active_fg));
-                    let title_w = galley.size().x.clamp(min_title_w, 220.0);
-                    let close_w = 18.0;
-                    let total_w = title_w + close_w + 18.0;
+                    let text_font = if is_active { active_font.clone() } else { font.clone() };
+                    let fg = if is_active { tc.active_fg } else { tc.idle_fg };
+                    let galley = ui.fonts_mut(|f| f.layout_no_wrap(titles[i].clone(), text_font, fg));
+                    let dot_extra = if doc.dirty {
+                        CHROME.tab_dirty_dot_radius * 2.0 + CHROME.tab_dirty_dot_gap
+                    } else {
+                        0.0
+                    };
+                    let title_w = (galley.size().x + dot_extra).clamp(min_title_w, CHROME.tab_title_max_w);
+                    let close_w = CHROME.tab_close_width;
+                    let total_w = CHROME.tab_pad_left + title_w + CHROME.tab_text_close_gap + close_w + CHROME.tab_pad_right;
 
-                    let (pill_rect, _) = ui.allocate_exact_size(vec2(total_w, TAB_H), Sense::hover());
+                    let (slot_rect, _) = ui.allocate_exact_size(vec2(total_w, slot_h), Sense::hover());
+                    let pill_rect =
+                        Rect::from_min_max(pos2(slot_rect.left(), pill_top), pos2(slot_rect.right(), pill_bot));
                     rects.push(pill_rect);
 
-                    let title_rect = Rect::from_min_size(pill_rect.min, vec2(total_w - close_w - 4.0, TAB_H));
-                    let close_rect = Rect::from_min_size(
-                        pos2(pill_rect.right() - close_w - 4.0, pill_rect.top()),
-                        vec2(close_w, TAB_H),
+                    let close_left = pill_rect.right() - close_w - CHROME.tab_pad_right;
+                    let title_rect = Rect::from_min_max(pill_rect.min, pos2(close_left, pill_bot));
+                    let close_rect = Rect::from_min_max(
+                        pos2(close_left, pill_top),
+                        pos2(pill_rect.right() - CHROME.tab_pad_right, pill_bot),
                     );
 
                     let title_resp = ui.interact(title_rect, Id::unique(("tab_title", doc.uid)), Sense::click_and_drag());
@@ -104,42 +128,32 @@ pub fn show(ui: &mut egui::Ui, top_bar_bottom: f32, docs: &[Document], active: u
                     if is_active {
                         paint_active_tab(ui.painter(), pill_rect, top_bar_bottom, spec);
                     } else if hovered {
-                        ui.painter().rect_filled(pill_rect, 7.0, tc.hover_bg);
+                        ui.painter().rect_filled(pill_rect, CHROME.tab_idle_radius, tc.hover_bg);
                     } else if tc.idle_bg != Color32::TRANSPARENT {
-                        ui.painter().rect_filled(pill_rect, 7.0, tc.idle_bg);
+                        ui.painter().rect_filled(pill_rect, CHROME.tab_idle_radius, tc.idle_bg);
                     }
 
-                    let fg = if is_active { tc.active_fg } else { tc.idle_fg };
-                    let text_font = if is_active { active_font.clone() } else { font.clone() };
-                    let clipped = ui.painter().with_clip_rect(title_rect.shrink2(vec2(4.0, 0.0)));
+                    let clip_r = Rect::from_min_max(
+                        pos2(pill_rect.left() + CHROME.tab_text_clip_pad_x, pill_rect.top()),
+                        pos2(close_left - 2.0, pill_rect.bottom()),
+                    );
+                    let clipped = ui.painter().with_clip_rect(clip_r);
+                    let mut text_x = pill_rect.left() + CHROME.tab_pad_left;
                     if doc.dirty {
                         let dot_col = if is_active { tc.dirty_active } else { tc.dirty_idle };
-                        clipped.text(
-                            pos2(pill_rect.left() + 9.0, pill_rect.center().y),
-                            Align2::LEFT_CENTER,
-                            "●",
-                            FontId::proportional(10.0),
-                            dot_col,
-                        );
-                        clipped.text(
-                            pos2(pill_rect.left() + 21.0, pill_rect.center().y),
-                            Align2::LEFT_CENTER,
-                            &titles[i],
-                            text_font,
-                            fg,
-                        );
-                    } else {
-                        clipped.text(
-                            pos2(pill_rect.left() + 10.0, pill_rect.center().y),
-                            Align2::LEFT_CENTER,
-                            &titles[i],
-                            text_font,
-                            fg,
-                        );
+                        let dot_cx = text_x + CHROME.tab_dirty_dot_radius;
+                        clipped.circle_filled(pos2(dot_cx, pill_center_y), CHROME.tab_dirty_dot_radius, dot_col);
+                        text_x = dot_cx + CHROME.tab_dirty_dot_radius + CHROME.tab_dirty_dot_gap;
                     }
+                    let text_y = theme::galley_ink_centered_pos_y(pill_top_px, pill_bot_px, &galley, ppp);
+                    clipped.galley(pos2(theme::snap_px(text_x, ppp), text_y), galley, fg);
 
                     if close_resp.hovered() {
-                        ui.painter().rect_filled(close_rect.shrink(3.5), 4.0, tc.close_hover_bg);
+                        ui.painter().rect_filled(
+                            close_rect.shrink(CHROME.tab_close_hover_inset),
+                            CHROME.tab_close_radius,
+                            tc.close_hover_bg,
+                        );
                         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
                     }
                     let close_fg = if is_active {
@@ -153,11 +167,11 @@ pub fn show(ui: &mut egui::Ui, top_bar_bottom: f32, docs: &[Document], active: u
                     } else {
                         tc.idle_fg
                     };
-                    ui.painter().text(
+                    theme::paint_close_x_icon(
+                        ui.painter(),
                         close_rect.center(),
-                        Align2::CENTER_CENTER,
-                        "×",
-                        FontId::proportional(14.0),
+                        CHROME.tab_close_icon_half,
+                        CHROME.tab_close_stroke_w,
                         close_fg,
                     );
 
@@ -224,14 +238,14 @@ pub fn show(ui: &mut egui::Ui, top_bar_bottom: f32, docs: &[Document], active: u
                         }
                     }
                     let line_x = if target < rects.len() {
-                        rects[target].left() - 2.0
+                        rects[target].left() - CHROME.tab_drag_line_offset
                     } else if let Some(last) = rects.last() {
-                        last.right() + 2.0
+                        last.right() + CHROME.tab_drag_line_offset
                     } else {
                         0.0
                     };
                     if let Some(first_r) = rects.first() {
-                        ui.painter().vline(line_x, first_r.y_range(), Stroke::new(2.0, tc.accent));
+                        ui.painter().vline(line_x, first_r.y_range(), Stroke::new(CHROME.tab_drag_line_w, tc.accent));
                     }
                     if ui.input(|i| !i.pointer.primary_down()) {
                         let to = if target > from { target - 1 } else { target };
@@ -244,18 +258,23 @@ pub fn show(ui: &mut egui::Ui, top_bar_bottom: f32, docs: &[Document], active: u
                     drag = None;
                 }
 
-                // 极简「+」新建标签按钮
-                let (plus_rect, plus_resp) = ui.allocate_exact_size(vec2(26.0, TAB_H), Sense::click());
+                // 极简「+」新建标签按钮（矢量像素对齐 + 替代字形基线漂移）
+                let (plus_slot, _) = ui.allocate_exact_size(vec2(CHROME.new_tab_btn_width, slot_h), Sense::hover());
+                let plus_rect =
+                    Rect::from_min_max(pos2(plus_slot.left(), pill_top), pos2(plus_slot.right(), pill_bot));
+                let plus_resp = ui.interact(plus_rect, Id::unique("tabs_new_btn"), Sense::click());
                 occupied_right_x = plus_rect.right();
                 if plus_resp.hovered() {
-                    ui.painter().rect_filled(plus_rect.shrink(2.0), 6.0, tc.hover_bg);
+                    ui.painter().rect_filled(
+                        plus_rect.shrink(CHROME.new_tab_hover_inset),
+                        CHROME.new_tab_radius,
+                        tc.hover_bg,
+                    );
                     ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
                 }
-                ui.painter().text(
+                theme::paint_plus_icon(
+                    ui.painter(),
                     plus_rect.center(),
-                    Align2::CENTER_CENTER,
-                    "+",
-                    FontId::proportional(15.0),
                     if plus_resp.hovered() { spec.text_fg } else { tc.idle_fg },
                 );
                 if plus_resp.on_hover_text("新建标签页").clicked() && action.is_none() {
@@ -272,49 +291,67 @@ fn paint_active_tab(painter: &egui::Painter, r: Rect, top_bar_bottom: f32, spec:
     let tc = &spec.tabs;
     match spec.active_tab_style {
         ActiveTabStyle::SoftShadowPill => {
-            painter.add(tc.shadow.as_shape(r, 8));
-            painter.rect_filled(r, 8.0, tc.active_bg);
+            painter.add(tc.shadow.as_shape(r, CHROME.tab_active_pill_radius));
+            painter.rect_filled(r, CHROME.tab_active_pill_radius, tc.active_bg);
         }
         ActiveTabStyle::CrimsonGoldBolt => {
-            painter.add(tc.shadow.as_shape(r, 8));
-            painter.rect_filled(r, 8.0, tc.active_bg);
+            painter.add(tc.shadow.as_shape(r, CHROME.tab_active_pill_radius));
+            painter.rect_filled(r, CHROME.tab_active_pill_radius, tc.active_bg);
             painter.hline(
                 (r.left() + 8.0)..=(r.right() - 8.0),
                 r.bottom() - 1.2,
-                Stroke::new(2.0, tc.secondary_accent),
+                Stroke::new(CHROME.tab_accent_line_w, tc.secondary_accent),
             );
-            let spark = Rect::from_center_size(pos2(r.center().x, r.bottom() - 1.5), vec2(8.0, 9.0));
+            let spark = Rect::from_center_size(
+                pos2(r.center().x, r.bottom() - 1.5),
+                vec2(CHROME.tab_spark_size[0], CHROME.tab_spark_size[1]),
+            );
             theme::paint_bolt(painter, spark, tc.secondary_accent);
         }
         ActiveTabStyle::ConnectedPageTopBar => {
+            let rad = CornerRadius {
+                nw: CHROME.tab_active_box_radius,
+                ne: CHROME.tab_active_box_radius,
+                sw: 0,
+                se: 0,
+            };
             let page_r = Rect::from_min_max(r.min, pos2(r.right(), top_bar_bottom));
-            let rad = CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 };
             painter.rect_filled(page_r, rad, tc.active_bg);
-            let st = Stroke::new(1.0, tc.border);
+            let st = Stroke::new(CHROME.tab_rim_line_w, tc.border);
             painter.vline(page_r.left() + 0.5, (page_r.top() + 5.0)..=page_r.bottom(), st);
             painter.vline(page_r.right() - 0.5, (page_r.top() + 5.0)..=page_r.bottom(), st);
             painter.hline(
                 (page_r.left() + 4.0)..=(page_r.right() - 4.0),
                 page_r.top() + 1.0,
-                Stroke::new(2.0, tc.accent),
+                Stroke::new(CHROME.tab_accent_line_w, tc.accent),
             );
         }
         ActiveTabStyle::CarbonGoldUnderline => {
-            painter.rect_filled(r, 6.0, tc.active_bg);
-            painter.rect_stroke(r, 6.0, Stroke::new(1.0, tc.border), StrokeKind::Inside);
+            painter.rect_filled(r, CHROME.tab_active_box_radius, tc.active_bg);
+            painter.rect_stroke(
+                r,
+                CHROME.tab_active_box_radius,
+                Stroke::new(CHROME.tab_rim_line_w, tc.border),
+                StrokeKind::Inside,
+            );
             painter.hline(
                 (r.left() + 4.0)..=(r.right() - 4.0),
                 r.bottom() - 1.0,
-                Stroke::new(2.0, tc.accent),
+                Stroke::new(CHROME.tab_accent_line_w, tc.accent),
             );
         }
         ActiveTabStyle::SmokedGlassRim => {
-            painter.rect_filled(r, 8.0, tc.active_bg);
-            painter.rect_stroke(r, 8.0, Stroke::new(1.0, tc.border), StrokeKind::Inside);
+            painter.rect_filled(r, CHROME.tab_active_pill_radius, tc.active_bg);
+            painter.rect_stroke(
+                r,
+                CHROME.tab_active_pill_radius,
+                Stroke::new(CHROME.tab_rim_line_w, tc.border),
+                StrokeKind::Inside,
+            );
             painter.hline(
                 (r.left() + 7.0)..=(r.right() - 7.0),
                 r.top() + 0.8,
-                Stroke::new(1.0, tc.secondary_accent),
+                Stroke::new(CHROME.tab_rim_line_w, tc.secondary_accent),
             );
         }
     }

@@ -165,7 +165,6 @@ impl FilesState {
 
         ui.horizontal(|ui| {
             let root_name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| root.display().to_string());
-            ui.strong(root_name).on_hover_text(root.display().to_string());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("↻").on_hover_text("刷新").clicked() {
                     self.refresh_expanded();
@@ -176,6 +175,11 @@ impl FilesState {
                 if ui.small_button("📄+").on_hover_text("新建笔记").clicked() {
                     self.creating = Some((root.clone(), false, "新建笔记.md".into(), true));
                 }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.set_min_width(0.0);
+                    ui.add(egui::Label::new(egui::RichText::new(root_name).strong()).truncate())
+                        .on_hover_text(root.display().to_string());
+                });
             });
         });
         ui.separator();

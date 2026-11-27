@@ -45,6 +45,7 @@ fn main() -> eframe::Result {
     }
     let is_automated = winutil::app_env_os("SCREENSHOT").is_some()
         || winutil::app_env("BENCH").as_deref() == Some("typing")
+        || winutil::app_env("ZOOM").is_some()
         || has_w
         || has_h;
     if !is_automated {
