@@ -1,6 +1,7 @@
 //! ThunderMD 顶层应用状态、布局与统一命令分发。
 
 use crate::commands::Command;
+use crate::dialog;
 use crate::document::{Document, ParseConfig};
 use crate::editor::{self, EditorConfig};
 use crate::find::{self, FindAction};
@@ -95,6 +96,7 @@ pub struct MdApp {
     sidebar_width: f32,
     open_menu_once: bool,
     open_theme_menu_once: bool,
+    demo_settings_scroll_frames: u8,
     use_system_titlebar_active: bool,
     dwm_rounded: bool,
     dwm_checked: bool,
@@ -199,6 +201,7 @@ impl MdApp {
             sidebar_width: SIDEBAR_DEFAULT_W,
             open_menu_once: false,
             open_theme_menu_once: false,
+            demo_settings_scroll_frames: 0,
             use_system_titlebar_active: use_system_titlebar,
             dwm_rounded,
             dwm_checked: false,
@@ -901,6 +904,23 @@ impl MdApp {
 
     fn handle_input(&mut self, ctx: &egui::Context) {
         if self.shortcuts_ui.capture_input(ctx, &mut self.keymap) {
+            return;
+        }
+        let blocking_overlay = self.confirm.is_some() || self.error.is_some() || self.export_dialog_open;
+        let mut has_conflict = self.shortcuts_ui.has_conflict();
+        if dialog::handle_dialogs_escape(
+            ctx,
+            &mut self.settings_open,
+            &mut self.shortcuts_ui.open,
+            &mut has_conflict,
+            blocking_overlay,
+        ) {
+            if !has_conflict {
+                self.shortcuts_ui.dismiss_conflict();
+            }
+            if !self.shortcuts_ui.open {
+                self.shortcuts_ui.clear_transient_state();
+            }
             return;
         }
         let cmds = ctx.input_mut(|i| self.keymap.match_and_consume(&mut i.events));
@@ -1778,6 +1798,7 @@ impl MdApp {
                 let name = self.docs[idx].display_name();
                 let mut choice = None;
                 egui::Window::new("未保存的修改")
+                    .order(egui::Order::Foreground)
                     .collapsible(false)
                     .resizable(false)
                     .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -1822,6 +1843,7 @@ impl MdApp {
                 }
                 let mut choice = None;
                 egui::Window::new("未保存的修改")
+                    .order(egui::Order::Foreground)
                     .collapsible(false)
                     .resizable(false)
                     .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -1881,6 +1903,7 @@ impl MdApp {
                 }
                 let mut choice = None;
                 egui::Window::new("退出前保存")
+                    .order(egui::Order::Foreground)
                     .collapsible(false)
                     .resizable(false)
                     .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -1931,6 +1954,7 @@ impl MdApp {
     fn error_dialog(&mut self, ctx: &egui::Context) {
         let Some(msg) = self.error.clone() else { return };
         egui::Window::new("错误")
+            .order(egui::Order::Foreground)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -1944,6 +1968,7 @@ impl MdApp {
 
     fn settings_window(&mut self, ctx: &egui::Context) {
         if !self.settings_open {
+            dialog::reset_dialog_drag_offset(ctx, dialog::settings_dialog_id());
             return;
         }
         let mut open = self.settings_open;
@@ -1951,177 +1976,400 @@ impl MdApp {
         let all_fonts = self.font_catalog.as_ref().map(FontCatalog::all_names).unwrap_or_default();
         let mono_fonts = self.font_catalog.as_ref().map(FontCatalog::mono_names).unwrap_or_default();
         let scanning = self.font_scan_rx.is_some();
+        let spec = theme::current(ctx);
 
-        egui::Window::new("外观与编辑器设置")
-            .open(&mut open)
-            .resizable(true)
-            .default_width(480.0)
-            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
-                    ui.label(egui::RichText::new("主题与外观").strong());
-                    let mut chosen_theme = self.settings.theme;
-                    egui::Grid::new("settings_theme").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                        ui.label("当前界面主题");
-                        egui::ComboBox::from_id_salt("settings_theme_combo")
-                            .width(260.0)
-                            .selected_text(chosen_theme.full_label())
-                            .show_ui(ui, |ui| {
-                                for id in ThemeId::ALL {
-                                    ui.selectable_value(&mut chosen_theme, id, id.full_label());
+        let mut close_clicked = false;
+        let mut open_shortcuts = false;
+        let mut theme_to_apply: Option<ThemeId> = None;
+        let mut zoom_to_apply: Option<f32> = None;
+        let prev_sys_titlebar = self.settings.use_system_titlebar;
+        let demo_scroll = self.demo_settings_scroll_frames > 0;
+        if self.demo_settings_scroll_frames > 0 {
+            self.demo_settings_scroll_frames -= 1;
+        }
+
+        dialog::dialog_shell(
+            ctx,
+            dialog::settings_dialog_id(),
+            560.0,
+            680.0,
+            "settings_dialog_scroll",
+            "外观与编辑器设置",
+            "调整主题、字体与编辑体验，修改即时生效",
+            &mut open,
+            |ui, section| match section {
+                dialog::DialogSection::SubHeader => {}
+                dialog::DialogSection::Body => {
+                    egui::Frame::new()
+                        .inner_margin(Margin::symmetric(16, 14))
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 12.0;
+
+                            // 1. 主题与外观
+                            dialog::section_card(ui, "主题与外观", None, |ui| {
+                                ui.spacing_mut().item_spacing.y = 6.0;
+                                ui.label(egui::RichText::new("当前界面主题").size(12.5).color(spec.muted_fg));
+
+                                let gap = 8.0;
+                                let avail_w = ui.available_width();
+                                let card_w = if avail_w >= 460.0 {
+                                    ((avail_w - gap * 4.0) / 5.0).floor()
+                                } else {
+                                    ((avail_w - gap * 2.0) / 3.0).floor().max(84.0)
+                                };
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.spacing_mut().item_spacing = vec2(gap, gap);
+                                    for id in ThemeId::ALL {
+                                        let selected = self.settings.theme == id;
+                                        if dialog::theme_swatch(ui, id, selected, card_w).clicked() && !selected {
+                                            theme_to_apply = Some(id);
+                                        }
+                                    }
+                                });
+
+                                dialog::card_divider(ui);
+
+                                dialog::setting_row(ui, "日间热切换偏好", |ui| {
+                                    dialog::segmented_control(
+                                        ui,
+                                        "settings_light_pair_seg",
+                                        &mut self.settings.light_theme,
+                                        &[
+                                            (ThemeId::ZenHorizon, "01 无界疾风"),
+                                            (ThemeId::ScarletStreak, "02 白昼疾影"),
+                                            (ThemeId::AtelierContrast, "03 半山书房"),
+                                        ],
+                                    );
+                                });
+
+                                dialog::setting_row(ui, "夜间热切换偏好", |ui| {
+                                    dialog::segmented_control(
+                                        ui,
+                                        "settings_dark_pair_seg",
+                                        &mut self.settings.dark_theme,
+                                        &[
+                                            (ThemeId::CarbonGold, "04 黑金疾电"),
+                                            (ThemeId::TitaniumGlass, "05 钛晶流光"),
+                                        ],
+                                    );
+                                });
+
+                                let sys_changed = self.settings.use_system_titlebar != self.use_system_titlebar_active;
+                                dialog::setting_toggle_row(
+                                    ui,
+                                    "settings_sys_titlebar_toggle",
+                                    "使用系统标题栏",
+                                    &mut self.settings.use_system_titlebar,
+                                    true,
+                                    0,
+                                    None,
+                                    |ui| {
+                                        if sys_changed {
+                                            ui.add_space(8.0);
+                                            dialog::pill(ui, "重启后生效", spec.semantic.warn);
+                                        }
+                                    },
+                                );
+                            });
+
+                            // 2. 字体
+                            let font_count_note = (!scanning)
+                                .then(|| self.font_catalog.as_ref().map(|c| format!("共 {} 个字体族", c.families.len())))
+                                .flatten();
+                            dialog::section_card(ui, "字体", font_count_note.as_deref(), |ui| {
+                                ui.spacing_mut().item_spacing.y = 4.0;
+                                if scanning {
+                                    ui.label(egui::RichText::new("正在后台扫描系统字体…").size(12.5).color(spec.muted_fg));
+                                } else if self.font_catalog.is_some() {
+                                    dialog::setting_row(ui, "筛选字体", |ui| {
+                                        dialog::search_input(
+                                            ui,
+                                            "settings_font_search",
+                                            &mut self.font_search,
+                                            ui.available_width(),
+                                            "输入字体名筛选…",
+                                        );
+                                    });
+                                }
+
+                                let filter = self.font_search.trim().to_ascii_lowercase();
+                                let filter_list = |src: &[String]| -> Vec<String> {
+                                    if filter.is_empty() {
+                                        src.to_vec()
+                                    } else {
+                                        src.iter().filter(|n| n.to_ascii_lowercase().contains(&filter)).cloned().collect()
+                                    }
+                                };
+                                let filtered_all = filter_list(&all_fonts);
+                                let filtered_mono = if mono_fonts.is_empty() { &filtered_all } else { &filter_list(&mono_fonts) };
+
+                                dialog::setting_row(ui, "预览正文字体", |ui| {
+                                    fonts_changed |= font_combo(
+                                        ui,
+                                        "preview_font_combo",
+                                        &mut self.settings.preview_font_family,
+                                        &filtered_all,
+                                        "系统默认（Segoe UI + 微软雅黑）",
+                                    );
+                                });
+                                dialog::setting_row(ui, "编辑器字体", |ui| {
+                                    fonts_changed |= font_combo(
+                                        ui,
+                                        "editor_font_combo",
+                                        &mut self.settings.editor_font_family,
+                                        &filtered_all,
+                                        "系统默认（Consolas + 微软雅黑）",
+                                    );
+                                });
+                                dialog::setting_row(ui, "代码块字体", |ui| {
+                                    fonts_changed |= font_combo(
+                                        ui,
+                                        "code_font_combo",
+                                        &mut self.settings.code_font_family,
+                                        filtered_mono,
+                                        "系统默认（Consolas + 微软雅黑）",
+                                    );
+                                });
+                            });
+
+                            // 3. 排版与缩放
+                            dialog::section_card(ui, "排版与缩放", None, |ui| {
+                                ui.spacing_mut().item_spacing.y = 4.0;
+                                dialog::setting_row(ui, "编辑器字号", |ui| {
+                                    let txt = format!("{:.0} pt", self.settings.editor_font_size);
+                                    dialog::value_slider(
+                                        ui,
+                                        "slider_editor_fs",
+                                        &mut self.settings.editor_font_size,
+                                        10.0..=32.0,
+                                        1.0,
+                                        &txt,
+                                        64.0,
+                                    );
+                                });
+                                dialog::setting_row(ui, "预览字号", |ui| {
+                                    let txt = format!("{:.0} pt", self.settings.preview_font_size);
+                                    dialog::value_slider(
+                                        ui,
+                                        "slider_preview_fs",
+                                        &mut self.settings.preview_font_size,
+                                        10.0..=32.0,
+                                        1.0,
+                                        &txt,
+                                        64.0,
+                                    );
+                                });
+                                dialog::setting_row(ui, "预览行高", |ui| {
+                                    let txt = format!("{:.2} ×", self.settings.line_height);
+                                    dialog::value_slider(
+                                        ui,
+                                        "slider_line_height",
+                                        &mut self.settings.line_height,
+                                        1.2..=2.2,
+                                        0.05,
+                                        &txt,
+                                        64.0,
+                                    );
+                                });
+                                dialog::setting_row(ui, "预览段距", |ui| {
+                                    let txt = format!("{:.2} em", self.settings.paragraph_spacing);
+                                    dialog::value_slider(
+                                        ui,
+                                        "slider_para_spacing",
+                                        &mut self.settings.paragraph_spacing,
+                                        0.3..=1.5,
+                                        0.05,
+                                        &txt,
+                                        64.0,
+                                    );
+                                });
+                                dialog::setting_row(ui, "界面缩放", |ui| {
+                                    let pct = (self.settings.ui_zoom * 100.0).round();
+                                    let txt = format!("{pct:.0} %");
+                                    let (_, committed) = dialog::value_slider(
+                                        ui,
+                                        "slider_ui_zoom",
+                                        &mut self.settings.ui_zoom,
+                                        0.75..=2.0,
+                                        0.05,
+                                        &txt,
+                                        64.0,
+                                    );
+                                    if committed {
+                                        zoom_to_apply = Some(self.settings.ui_zoom);
+                                    }
+                                });
+
+                                dialog::card_divider(ui);
+
+                                let mut limit_width = self.settings.max_content_width > 0.0;
+                                if dialog::setting_toggle_row(
+                                    ui,
+                                    "toggle_limit_width",
+                                    "限制最大阅读/编辑行宽（居中显示）",
+                                    &mut limit_width,
+                                    true,
+                                    0,
+                                    None,
+                                    |_| {},
+                                )
+                                .changed()
+                                {
+                                    self.settings.max_content_width = if limit_width { 820.0 } else { 0.0 };
+                                }
+                                if limit_width {
+                                    dialog::setting_row(ui, "  最大行宽", |ui| {
+                                        let txt = format!("{:.0} px", self.settings.max_content_width);
+                                        dialog::value_slider(
+                                            ui,
+                                            "slider_max_width",
+                                            &mut self.settings.max_content_width,
+                                            560.0..=1400.0,
+                                            20.0,
+                                            &txt,
+                                            72.0,
+                                        );
+                                    });
                                 }
                             });
-                        ui.end_row();
 
-                        ui.label("日间热切换偏好");
-                        egui::ComboBox::from_id_salt("settings_light_pair_combo")
-                            .width(260.0)
-                            .selected_text(self.settings.light_theme.full_label())
-                            .show_ui(ui, |ui| {
-                                for id in [ThemeId::ZenHorizon, ThemeId::ScarletStreak, ThemeId::AtelierContrast] {
-                                    ui.selectable_value(&mut self.settings.light_theme, id, id.full_label());
-                                }
+                            // 4. Markdown 与编辑器
+                            dialog::section_card(ui, "Markdown 与编辑器", None, |ui| {
+                                ui.spacing_mut().item_spacing.y = 2.0;
+                                dialog::setting_toggle_row(
+                                    ui,
+                                    "toggle_sup_sub",
+                                    "上标 / 下标（^上标^、~下标~）",
+                                    &mut self.settings.sup_sub,
+                                    true,
+                                    0,
+                                    Some("开启后单个 ~ 表示下标，删除线请使用 ~~文本~~"),
+                                    |_| {},
+                                );
+                                dialog::setting_toggle_row(
+                                    ui,
+                                    "toggle_front_matter",
+                                    "预览中显示 YAML Front Matter",
+                                    &mut self.settings.front_matter,
+                                    true,
+                                    0,
+                                    None,
+                                    |_| {},
+                                );
+                                dialog::setting_toggle_row(
+                                    ui,
+                                    "toggle_code_ln",
+                                    "代码块显示行号",
+                                    &mut self.settings.code_line_numbers,
+                                    true,
+                                    0,
+                                    None,
+                                    |_| {},
+                                );
+                                dialog::setting_toggle_row(
+                                    ui,
+                                    "toggle_auto_pair",
+                                    "自动闭合括号与引号",
+                                    &mut self.settings.auto_pair,
+                                    true,
+                                    0,
+                                    None,
+                                    |_| {},
+                                );
+                                dialog::setting_toggle_row(
+                                    ui,
+                                    "toggle_auto_pair_code",
+                                    "代码块内也自动补全",
+                                    &mut self.settings.auto_pair_in_code,
+                                    self.settings.auto_pair,
+                                    1,
+                                    None,
+                                    |_| {},
+                                );
+                                dialog::setting_toggle_row(
+                                    ui,
+                                    "toggle_paste_html",
+                                    "粘贴网页/富文本时自动转为 Markdown",
+                                    &mut self.settings.paste_html_as_md,
+                                    true,
+                                    0,
+                                    None,
+                                    |_| {},
+                                );
+                                dialog::setting_toggle_row(
+                                    ui,
+                                    "toggle_restore_tabs",
+                                    "启动时恢复上次打开的标签",
+                                    &mut self.settings.restore_tabs,
+                                    true,
+                                    0,
+                                    None,
+                                    |_| {},
+                                );
                             });
-                        ui.end_row();
 
-                        ui.label("夜间热切换偏好");
-                        egui::ComboBox::from_id_salt("settings_dark_pair_combo")
-                            .width(260.0)
-                            .selected_text(self.settings.dark_theme.full_label())
-                            .show_ui(ui, |ui| {
-                                for id in [ThemeId::CarbonGold, ThemeId::TitaniumGlass] {
-                                    ui.selectable_value(&mut self.settings.dark_theme, id, id.full_label());
-                                }
+                            // 5. 字数统计
+                            dialog::section_card(ui, "字数统计", None, |ui| {
+                                ui.spacing_mut().item_spacing.y = 2.0;
+                                dialog::setting_toggle_row(
+                                    ui,
+                                    "toggle_stats_code",
+                                    "统计时排除代码块与行内代码",
+                                    &mut self.settings.stats_exclude_code,
+                                    true,
+                                    0,
+                                    None,
+                                    |_| {},
+                                );
+                                dialog::setting_toggle_row(
+                                    ui,
+                                    "toggle_stats_syntax",
+                                    "统计时忽略 Markdown 标记符号",
+                                    &mut self.settings.stats_exclude_syntax,
+                                    true,
+                                    0,
+                                    None,
+                                    |_| {},
+                                );
                             });
-                        ui.end_row();
-                    });
-                    if chosen_theme != self.settings.theme {
-                        self.set_theme(ctx, chosen_theme);
-                    }
-                    let prev_sys_titlebar = self.settings.use_system_titlebar;
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.settings.use_system_titlebar, "使用系统标题栏");
-                        if self.settings.use_system_titlebar != self.use_system_titlebar_active {
-                            ui.label(egui::RichText::new("重启后生效").color(theme::current(ctx).semantic.warn));
-                        }
-                    });
-                    if self.settings.use_system_titlebar != prev_sys_titlebar {
-                        window_frame::save_startup_use_system_titlebar(APP_NAME, self.settings.use_system_titlebar);
-                    }
-                    ui.separator();
-
-                    ui.label(egui::RichText::new("字体").strong());
-                    if scanning {
-                        ui.weak("正在后台扫描系统字体…");
-                    } else if let Some(cat) = &self.font_catalog {
-                        ui.horizontal(|ui| {
-                            ui.label("筛选");
-                            ui.add(egui::TextEdit::singleline(&mut self.font_search).desired_width(180.0).hint_text("输入字体名…"));
-                            ui.weak(format!("共 {} 个字体族", cat.families.len()));
                         });
+                    if demo_scroll {
+                        ui.scroll_to_cursor(Some(Align::BOTTOM));
                     }
-                    let filter = self.font_search.trim().to_ascii_lowercase();
-                    let filter_list = |src: &[String]| -> Vec<String> {
-                        if filter.is_empty() {
-                            src.to_vec()
-                        } else {
-                            src.iter().filter(|n| n.to_ascii_lowercase().contains(&filter)).cloned().collect()
+                }
+                dialog::DialogSection::Footer => {
+                    if dialog::secondary_button(ui, "自定义快捷键… (Ctrl+K)").clicked() {
+                        open_shortcuts = true;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                        if dialog::primary_button(ui, "完成").clicked() {
+                            close_clicked = true;
                         }
-                    };
-                    let filtered_all = filter_list(&all_fonts);
-                    let filtered_mono = if mono_fonts.is_empty() { &filtered_all } else { &filter_list(&mono_fonts) };
-
-                    egui::Grid::new("settings_fonts").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                        ui.label("预览正文字体");
-                        fonts_changed |= font_combo(
-                            ui,
-                            "preview_font_combo",
-                            &mut self.settings.preview_font_family,
-                            &filtered_all,
-                            "系统默认（Segoe UI + 微软雅黑）",
-                        );
-                        ui.end_row();
-
-                        ui.label("编辑器字体");
-                        fonts_changed |= font_combo(
-                            ui,
-                            "editor_font_combo",
-                            &mut self.settings.editor_font_family,
-                            &filtered_all,
-                            "系统默认（Consolas + 微软雅黑）",
-                        );
-                        ui.end_row();
-
-                        ui.label("代码块字体");
-                        fonts_changed |= font_combo(
-                            ui,
-                            "code_font_combo",
-                            &mut self.settings.code_font_family,
-                            filtered_mono,
-                            "系统默认（Consolas + 微软雅黑）",
-                        );
-                        ui.end_row();
                     });
+                }
+            },
+        );
 
-                    ui.separator();
-                    ui.label(egui::RichText::new("排版与缩放").strong());
-                    egui::Grid::new("settings_layout").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                        ui.label("编辑器字号");
-                        ui.add(egui::Slider::new(&mut self.settings.editor_font_size, 10.0..=32.0).step_by(1.0));
-                        ui.end_row();
-                        ui.label("预览字号");
-                        ui.add(egui::Slider::new(&mut self.settings.preview_font_size, 10.0..=32.0).step_by(1.0));
-                        ui.end_row();
-                        ui.label("预览行高");
-                        ui.add(egui::Slider::new(&mut self.settings.line_height, 1.2..=2.2).step_by(0.05));
-                        ui.end_row();
-                        ui.label("预览段距");
-                        ui.add(egui::Slider::new(&mut self.settings.paragraph_spacing, 0.3..=1.5).step_by(0.05));
-                        ui.end_row();
-                        ui.label("界面缩放");
-                        if ui.add(egui::Slider::new(&mut self.settings.ui_zoom, 0.75..=2.0).step_by(0.05)).changed() {
-                            ctx.set_zoom_factor(self.settings.ui_zoom);
-                        }
-                        ui.end_row();
-                    });
-
-                    let mut limit_width = self.settings.max_content_width > 0.0;
-                    if ui.checkbox(&mut limit_width, "限制最大阅读/编辑行宽（居中显示）").changed() {
-                        self.settings.max_content_width = if limit_width { 820.0 } else { 0.0 };
-                    }
-                    if limit_width {
-                        ui.add(
-                            egui::Slider::new(&mut self.settings.max_content_width, 560.0..=1400.0)
-                                .step_by(20.0)
-                                .text("px"),
-                        );
-                    }
-
-                    ui.separator();
-                    ui.label(egui::RichText::new("Markdown 与编辑器").strong());
-                    ui.checkbox(&mut self.settings.sup_sub, "上标 / 下标（^上标^、~下标~）");
-                    ui.checkbox(&mut self.settings.front_matter, "预览中显示 YAML Front Matter");
-                    ui.checkbox(&mut self.settings.code_line_numbers, "代码块显示行号");
-                    ui.checkbox(&mut self.settings.auto_pair, "自动闭合括号与引号");
-                    ui.add_enabled(
-                        self.settings.auto_pair,
-                        egui::Checkbox::new(&mut self.settings.auto_pair_in_code, "代码块内也自动补全"),
-                    );
-                    ui.checkbox(&mut self.settings.paste_html_as_md, "粘贴网页/富文本时自动转为 Markdown");
-                    ui.checkbox(&mut self.settings.restore_tabs, "启动时恢复上次打开的标签");
-
-                    ui.separator();
-                    ui.label(egui::RichText::new("字数统计").strong());
-                    ui.checkbox(&mut self.settings.stats_exclude_code, "统计时排除代码块与行内代码");
-                    ui.checkbox(&mut self.settings.stats_exclude_syntax, "统计时忽略 Markdown 标记符号");
-
-                    ui.separator();
-                    if ui.button("自定义快捷键… (Ctrl+K)").clicked() {
-                        self.shortcuts_ui.open = true;
-                    }
-                });
-            });
-        self.settings_open = open;
+        if let Some(id) = theme_to_apply {
+            self.set_theme(ctx, id);
+        }
+        if let Some(z) = zoom_to_apply {
+            ctx.set_zoom_factor(z);
+        } else if !ctx.input(|i| i.pointer.primary_down())
+            && (ctx.zoom_factor() - self.settings.ui_zoom).abs() > 1e-4
+        {
+            ctx.set_zoom_factor(self.settings.ui_zoom);
+        }
+        if self.settings.use_system_titlebar != prev_sys_titlebar {
+            window_frame::save_startup_use_system_titlebar(APP_NAME, self.settings.use_system_titlebar);
+        }
+        if open_shortcuts {
+            self.shortcuts_ui.open = true;
+        }
+        self.settings_open = open && !close_clicked;
+        if !self.settings_open {
+            dialog::reset_dialog_drag_offset(ctx, dialog::settings_dialog_id());
+        }
 
         if fonts_changed {
             let choice = self.font_choice();
@@ -2299,6 +2547,22 @@ impl MdApp {
                     self.open_menu_once = true;
                 } else if id == "open_theme_menu" {
                     self.open_theme_menu_once = true;
+                } else if id == "demo_shortcuts_states" {
+                    // 演示已修改、未绑定、录制态与冲突提示条（仅截图自测触发）
+                    self.keymap.set(Command::NewTab, Some(crate::keymap::Shortcut::new(true, true, false, egui::Key::F5)));
+                    self.keymap.set(Command::CloseTab, None);
+                    self.shortcuts_ui.debug_set_capturing(Some(Command::New));
+                    self.shortcuts_ui.debug_set_conflict(
+                        Command::Open,
+                        Command::Save,
+                        crate::keymap::Shortcut::new(true, false, false, egui::Key::S),
+                    );
+                } else if id == "demo_settings_scroll_bottom" {
+                    // 仅截图自测：将设置窗口内滑块与开关状态设为代表性演示并向下滚动以展示下半部分卡片
+                    self.settings.max_content_width = 860.0;
+                    self.settings.use_system_titlebar = !self.use_system_titlebar_active;
+                    self.settings.sup_sub = true;
+                    self.demo_settings_scroll_frames = 6;
                 } else if let Some(cmd) = Command::from_id(&id) {
                     self.run_command(ctx, cmd);
                 }
@@ -2357,22 +2621,24 @@ fn font_combo(
     default_label: &str,
 ) -> bool {
     let mut changed = false;
-    let display = if selected.is_empty() { default_label } else { selected.as_str() };
-    egui::ComboBox::from_id_salt(id_salt)
-        .width(260.0)
-        .selected_text(display)
-        .show_ui(ui, |ui| {
-            if ui.selectable_label(selected.is_empty(), default_label).clicked() && !selected.is_empty() {
-                selected.clear();
+    let display = if selected.is_empty() {
+        default_label.to_string()
+    } else {
+        selected.clone()
+    };
+    let w = ui.available_width().min(290.0);
+    dialog::styled_combo(ui, id_salt, w, &display, |ui| {
+        if ui.selectable_label(selected.is_empty(), default_label).clicked() && !selected.is_empty() {
+            selected.clear();
+            changed = true;
+        }
+        for name in names {
+            if ui.selectable_label(selected == name, name).clicked() && selected != name {
+                *selected = name.clone();
                 changed = true;
             }
-            for name in names {
-                if ui.selectable_label(selected == name, name).clicked() && selected != name {
-                    *selected = name.clone();
-                    changed = true;
-                }
-            }
-        });
+        }
+    });
     changed
 }
 
@@ -2663,6 +2929,7 @@ impl eframe::App for MdApp {
         self.confirm_dialog(ctx);
         self.error_dialog(ctx);
         self.export_dialog_window(ctx);
+        dialog::paint_backdrop_and_sync_layers(ctx, self.settings_open, self.shortcuts_ui.open);
         self.settings_window(ctx);
         self.shortcuts_ui.window_ui(ctx, &mut self.keymap, &mut self.error);
         self.stats_popup_window(ctx);

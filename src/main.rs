@@ -4,6 +4,7 @@ mod app;
 mod clipboard;
 mod commands;
 mod convert;
+mod dialog;
 mod document;
 mod editor;
 mod export;

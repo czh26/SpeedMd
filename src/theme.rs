@@ -749,6 +749,38 @@ pub struct SemanticColors {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct DialogPalette {
+    /// 半透明背景遮罩（浅色约 alpha 46/255 ≈ 0.18，深色约 102/255 ≈ 0.40，由文字色/画布色派生）
+    pub scrim: Color32,
+    /// 弹窗主体填充色（01–03 取主区浅色 popup_bg，04/05 适度提亮以和遮罩拉开层次）
+    pub bg: Color32,
+    /// 弹窗外框 1px 描边色
+    pub border: Color32,
+    /// 弹窗外框上缘微高光线（仅 05 钛晶流光启用）
+    pub top_highlight: Option<Color32>,
+    /// 头部与底部栏温和底色
+    pub chrome_bg: Color32,
+    /// 分组卡片底色
+    pub card_bg: Color32,
+    /// 分组卡片描边色
+    pub card_border: Color32,
+    /// 卡片与键帽上缘玻璃高光线（仅 05 钛晶流光启用）
+    pub glass_highlight: Option<Color32>,
+    /// 主强调色上的前景色（确保主按钮文字与开启态圆点对比度）
+    pub on_accent: Color32,
+    /// 警告主色上的前景色（供冲突提示条「覆盖」按钮使用）
+    pub on_warn: Color32,
+    /// 设置行与快捷键行的悬停圆角底色
+    pub row_hover_bg: Color32,
+    /// 键帽表面色
+    pub keycap_bg: Color32,
+    /// 键帽四周描边色
+    pub keycap_border: Color32,
+    /// 键帽底部加深立体边色
+    pub keycap_bottom_border: Color32,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct ExportCssPalette {
     pub color_scheme: &'static str,
     pub bg: Color32,
@@ -811,6 +843,7 @@ pub struct ThemeSpec {
     pub code: CodePalette,
     pub manual: ManualPalette,
     pub semantic: SemanticColors,
+    pub dialog: DialogPalette,
     pub export_css: ExportCssPalette,
 }
 
@@ -1031,6 +1064,22 @@ const ZEN_HORIZON: ThemeSpec = {
             warn: hex(0xC2410C),
             error: hex(0xDC2626),
             dirty_dot: accent,
+        },
+        dialog: DialogPalette {
+            scrim: alpha(text, 46),
+            bg: surface,
+            border,
+            top_highlight: None,
+            chrome_bg: mix(surface, canvas, 65, 100),
+            card_bg: mix(canvas, callout, 55, 100),
+            card_border: alpha(border, 153),
+            glass_highlight: None,
+            on_accent,
+            on_warn: on_accent,
+            row_hover_bg: alpha(hover_bg, 210),
+            keycap_bg: surface,
+            keycap_border: border,
+            keycap_bottom_border: mix(border, muted, 32, 100),
         },
         export_css: ExportCssPalette {
             color_scheme: "light",
@@ -1259,6 +1308,22 @@ const SCARLET_STREAK: ThemeSpec = {
             warn: hex(0xB45309),
             error: accent,
             dirty_dot: accent,
+        },
+        dialog: DialogPalette {
+            scrim: alpha(text, 46),
+            bg: canvas,
+            border,
+            top_highlight: None,
+            chrome_bg: mix(canvas, chrome, 70, 100),
+            card_bg: mix(canvas, chrome, 78, 100),
+            card_border: alpha(border, 153),
+            glass_highlight: None,
+            on_accent,
+            on_warn: on_accent,
+            row_hover_bg: alpha(hover_bg, 210),
+            keycap_bg: canvas,
+            keycap_border: border,
+            keycap_bottom_border: mix(border, muted, 30, 100),
         },
         export_css: ExportCssPalette {
             color_scheme: "light",
@@ -1494,6 +1559,22 @@ const ATELIER_CONTRAST: ThemeSpec = {
             error: close_red,
             dirty_dot: accent,
         },
+        dialog: DialogPalette {
+            scrim: alpha(left_bg, 50),
+            bg: page_bg,
+            border: split_line,
+            top_highlight: None,
+            chrome_bg: mix(page_bg, tab_strip, 55, 100),
+            card_bg: mix(page_bg, code_bg, 72, 100),
+            card_border: alpha(split_line, 153),
+            glass_highlight: None,
+            on_accent,
+            on_warn: on_accent,
+            row_hover_bg: alpha(hover_bg, 210),
+            keycap_bg: hex(0xFFFFFF),
+            keycap_border: split_line,
+            keycap_bottom_border: mix(split_line, muted, 32, 100),
+        },
         export_css: ExportCssPalette {
             color_scheme: "light",
             bg: page_bg,
@@ -1712,6 +1793,22 @@ const CARBON_GOLD: ThemeSpec = {
             warn: accent2,
             error: hex(0xF87171),
             dirty_dot: accent,
+        },
+        dialog: DialogPalette {
+            scrim: alpha(canvas, 104),
+            bg: mix(chrome, btn_bg, 45, 100),
+            border: mix(border, text, 6, 100),
+            top_highlight: None,
+            chrome_bg: chrome,
+            card_bg: mix(btn_bg, text, 3, 100),
+            card_border: alpha(mix(border, text, 8, 100), 153),
+            glass_highlight: None,
+            on_accent,
+            on_warn: on_accent,
+            row_hover_bg: alpha(hover_bg, 210),
+            keycap_bg: btn_bg,
+            keycap_border: mix(border, text, 10, 100),
+            keycap_bottom_border: mix(canvas, border, 35, 100),
         },
         export_css: ExportCssPalette {
             color_scheme: "dark",
@@ -1948,6 +2045,22 @@ const TITANIUM_GLASS: ThemeSpec = {
             warn: hex(0xFBBF24),
             error: hex(0xF87171),
             dirty_dot: accent,
+        },
+        dialog: DialogPalette {
+            scrim: alpha(chassis, 104),
+            bg: mix(glass_plate, glass_card, 55, 100),
+            border: mix(border, accent, 14, 100),
+            top_highlight: Some(alpha(accent, 48)),
+            chrome_bg: glass_plate,
+            card_bg: mix(glass_card, active_pill, 28, 100),
+            card_border: alpha(mix(border, accent, 16, 100), 153),
+            glass_highlight: Some(alpha(accent, 34)),
+            on_accent,
+            on_warn: on_accent,
+            row_hover_bg: alpha(hover_bg, 210),
+            keycap_bg: mix(glass_card, active_pill, 38, 100),
+            keycap_border: mix(border, accent, 16, 100),
+            keycap_bottom_border: chassis,
         },
         export_css: ExportCssPalette {
             color_scheme: "dark",
@@ -2560,7 +2673,7 @@ mod tests {
                 }
             }
             assert!(total_verts > 0, "ppp={ppp} generated zero vertices");
-            assert!(total_indices > 0 && total_indices % 3 == 0, "ppp={ppp} invalid triangle count");
+            assert!(total_indices > 0 && total_indices.is_multiple_of(3), "ppp={ppp} invalid triangle count");
         }
     }
 }

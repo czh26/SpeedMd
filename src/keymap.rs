@@ -24,6 +24,27 @@ impl Shortcut {
         let ctrl = modifiers.ctrl || modifiers.command;
         Some(Self { ctrl, shift: modifiers.shift, alt: modifiers.alt, key: actual })
     }
+
+    /// 按结构化字段拆分为独立键帽文本切片与数量（绝不对字符串做 `split('+')`，避免 `+` 键本身被误拆分）。
+    pub fn keycaps(self) -> ([&'static str; 4], usize) {
+        let mut out = [""; 4];
+        let mut len = 0;
+        if self.ctrl {
+            out[len] = "Ctrl";
+            len += 1;
+        }
+        if self.shift {
+            out[len] = "Shift";
+            len += 1;
+        }
+        if self.alt {
+            out[len] = "Alt";
+            len += 1;
+        }
+        out[len] = key_display_name(self.key);
+        len += 1;
+        (out, len)
+    }
 }
 
 fn is_modifier_key(k: Key) -> bool {
@@ -478,5 +499,20 @@ mod tests {
         let mut events = vec![f1];
         assert_eq!(km.match_and_consume(&mut events), vec![Command::OpenManual]);
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn structured_keycaps_preserve_plus_key() {
+        let plus = Shortcut::new(true, false, false, Key::Plus);
+        let (caps, len) = plus.keycaps();
+        assert_eq!(&caps[..len], &["Ctrl", "+"]);
+
+        let multi = Shortcut::new(true, true, true, Key::Tab);
+        let (caps, len) = multi.keycaps();
+        assert_eq!(&caps[..len], &["Ctrl", "Shift", "Alt", "Tab"]);
+
+        let single = Shortcut::new(false, false, false, Key::F1);
+        let (caps, len) = single.keycaps();
+        assert_eq!(&caps[..len], &["F1"]);
     }
 }
