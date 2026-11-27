@@ -419,6 +419,7 @@ cargo test                     # stats / keymap / find / textproc / html_inline 
   - `src/sidebar/files.rs` 文件树顶栏采用右对齐先预留 `📄+` / `📁+` / `↻` 按钮、左侧目录名自动省略号截断，防止 `480 px` 窄窗下目录名与按钮碰触。
 - **像素级垂直居中机制**：
   - `compute_top_bar_layout`（[src/window_frame.rs](file:///c:/Users/25357/Desktop/markdown/src/window_frame.rs)）与 `status_bar`（[src/app.rs](file:///c:/Users/25357/Desktop/markdown/src/app.rs)）先扣除顶部外边框与结构底/顶分割线的物理像素，再在净内容区间 `[content_top_px, content_bot_px]` / `[sb_top_px, sb_bot_px]` 内通过 `snap_centered_span_px` 计算整像素对齐的胶囊边界。
+  - **Windows 无边框底边裁剪补偿（`window_frame::bottom_frame_occluded_px`）**：`winit` 无边框还原态窗口在 Windows 下通过 `WM_NCCALCSIZE`（`rgrc[0].top += 1; rgrc[0].bottom += 1`）将客户区相对 `WindowRect` 下移 `1` 物理像素，使最底 `1 px` 落在 `WindowRect` 外被系统裁剪；同时 Windows 11 DWM 圆角底边或 Windows 10 `1pt` 外边框再占用 `(1.0 * ppp).round().max(1.0)` 物理像素。`Panel::bottom("status_bar")` 因此分配 `STATUS_BAR_H + bot_occluded_px / ppp` 并按 `[sb_top_px, bar_bot_px - bot_occluded_px]` 居中（Win10 外边框亦上收 `1 px` 绘制于可见底边内侧），使屏幕真实可见底栏稳定维持 `32 pt` 且上下视觉完全居中。
   - `galley_ink_centered_pos_y` 使用字形真实墨迹包围盒 `Galley::mesh_bounds` 居中文本，消除 Windows 下 `Segoe UI` 与 `msyh.ttc` 行距不对称导致的视觉下沉；所有胶囊（含状态栏统计胶囊、模式切换、品牌字标与标签）围绕同一净内容物理中线对齐。
   - 顶/底分割线采用物理像素对齐的 `rect_filled`，`≡`、`+`、`×` 及脏标圆点改用矢量几何绘制，状态栏悬浮胶囊阴影改为对称 `offset: [0, 0], blur: CHROME.status_pill_shadow_blur (4)`，经自动化像素扫描验证 5 套主题 × `{100%, 150%}` 全部 60 项实测上下留白差均满足 `<= 1 px`。
 

@@ -1498,13 +1498,12 @@ impl MdApp {
         occupied_right
     }
 
-    fn status_bar(&mut self, ui: &mut egui::Ui) {
+    fn status_bar(&mut self, ui: &mut egui::Ui, panel_h: f32, bot_occluded_px: f32) {
         let ctx = ui.ctx().clone();
         let spec = theme::current(&ctx);
-        let (bar_rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), STATUS_BAR_H), Sense::hover());
+        let (bar_rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), panel_h), Sense::hover());
 
         let ppp = ctx.pixels_per_point().max(1.0);
-        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
         let (base_bg, top_border) = match spec.status_bar {
             StatusBarStyle::FloatingPill { bar_bg, top_border, .. } => (bar_bg, top_border),
             StatusBarStyle::FlushTelemetry { bar_bg, top_border, .. } => (bar_bg, Some(top_border)),
@@ -1521,17 +1520,12 @@ impl MdApp {
             ui.painter().rect_filled(bar_rect, 0.0, base_bg);
         }
 
-        // 扣除顶部分割线与 Win10 非圆角 1px 底部外框后的物理像素净内容区 [sb_top_px, sb_bot_px]
+        // 扣除顶部分割线与 Windows 无边框还原态底部裁剪/底边框占用后的物理像素可见净内容区 [sb_top_px, sb_bot_px]
         let top_decor_px = if top_border.is_some() { (1.0 * ppp).round().max(1.0) } else { 0.0 };
-        let bot_decor_px = if !self.use_system_titlebar_active && !self.dwm_rounded && !maximized {
-            (1.0 * ppp).round().max(1.0)
-        } else {
-            0.0
-        };
         let bar_top_px = (bar_rect.top() * ppp).round();
         let bar_bot_px = (bar_rect.bottom() * ppp).round();
         let sb_top_px = bar_top_px + top_decor_px;
-        let sb_bot_px = (bar_bot_px - bot_decor_px).max(sb_top_px + 1.0);
+        let sb_bot_px = (bar_bot_px - bot_occluded_px).max(sb_top_px + 1.0);
         let sb_center_y = theme::snap_px((sb_top_px + sb_bot_px) * 0.5 / ppp, ppp);
 
         if let Some(tb) = top_border {
@@ -2224,11 +2218,16 @@ impl MdApp {
             Some(sel) => ("当前选区", sel),
             None => ("全文", doc.stats.full),
         };
+        let ppp = ctx.pixels_per_point().max(1.0);
+        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        let bot_occluded_pt =
+            window_frame::bottom_frame_occluded_px(self.use_system_titlebar_active, maximized, ppp) / ppp;
+        let popup_offset = [CHROME.stats_popup_offset[0], CHROME.stats_popup_offset[1] - bot_occluded_pt];
         egui::Window::new("字数统计")
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
-            .anchor(Align2::RIGHT_BOTTOM, CHROME.stats_popup_offset)
+            .anchor(Align2::RIGHT_BOTTOM, popup_offset)
             .show(ctx, |ui| {
                 ui.weak(format!("统计范围：{title_note}（已排除 Front Matter）"));
                 ui.add_space(4.0);
@@ -2500,11 +2499,16 @@ impl eframe::App for MdApp {
         if !self.doc().is_manual {
             self.last_doc_uid = Some(self.doc().uid);
         }
+        let ppp = ctx.pixels_per_point().max(1.0);
+        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        let bot_occluded_px =
+            window_frame::bottom_frame_occluded_px(self.use_system_titlebar_active, maximized, ppp);
+        let status_panel_h = STATUS_BAR_H + bot_occluded_px / ppp;
         egui::Panel::bottom("status_bar")
-            .exact_size(STATUS_BAR_H)
+            .exact_size(status_panel_h)
             .show_separator_line(false)
             .frame(Frame::NONE)
-            .show(ui, |ui| self.status_bar(ui));
+            .show(ui, |ui| self.status_bar(ui, status_panel_h, bot_occluded_px));
 
         if self.settings.sidebar_open {
             let active_path = self.doc().path.clone();
@@ -2655,11 +2659,10 @@ impl eframe::App for MdApp {
         self.shortcuts_ui.window_ui(ctx, &mut self.keymap, &mut self.error);
         self.stats_popup_window(ctx);
 
-        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
         let manual_body_y = self.doc().is_manual.then(|| {
             let win_r = ctx.content_rect();
             let top = win_r.top() + TOP_BAR_H;
-            let bot = (win_r.bottom() - STATUS_BAR_H).max(top);
+            let bot = (win_r.bottom() - status_panel_h).max(top);
             top..=bot
         });
         window_frame::handle_window_frame_chrome(

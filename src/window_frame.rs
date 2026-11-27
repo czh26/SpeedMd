@@ -76,6 +76,19 @@ pub fn clamp_sidebar_width(win_width: f32, raw_w: f32) -> f32 {
     raw_w.clamp(min_w, max_w)
 }
 
+/// 计算无边框还原态窗口在 Windows 下底栏末尾被系统裁剪与底边框占用的物理像素高度：
+/// - `winit` 在 `WM_NCCALCSIZE` 中执行 `rgrc[0].top += 1; rgrc[0].bottom += 1`，将客户区整体下移 `1` 物理像素，
+///   导致最底部 `1` 物理像素超出 `WindowRect.bottom` 被系统裁剪；
+/// - Windows 11 DWM 圆角底边收口或 Windows 10 自绘 `1pt` 底边框额外占用 `(1.0 * ppp).round().max(1.0)` 物理像素。
+/// - 最大化或使用系统标题栏时客户区与可见区严格对齐，返回 `0.0`。
+pub fn bottom_frame_occluded_px(use_system_titlebar: bool, maximized: bool, ppp: f32) -> f32 {
+    if use_system_titlebar || maximized {
+        0.0
+    } else {
+        1.0 + (1.0 * ppp.max(1.0)).round().max(1.0)
+    }
+}
+
 /// 根据顶栏矩形、侧栏状态和净内容物理像素边界计算各区域几何矩形（纯函数，无 UI 状态副作用）。
 #[allow(clippy::too_many_arguments)]
 pub fn compute_top_bar_layout(
@@ -559,12 +572,15 @@ pub fn handle_window_frame_chrome(
 
     if !dwm_rounded && !maximized {
         let spec = theme::current(ctx);
+        let ppp = ctx.pixels_per_point().max(1.0);
+        let visible_win_rect = Rect::from_min_max(win_rect.min, pos2(win_rect.max.x, win_rect.max.y - 1.0 / ppp));
+        let bw = theme::snap_stroke_width(1.0, ppp);
         let painter = ctx.layer_painter(LayerId::new(Order::Foreground, egui::Id::unique("thundermd_win_border")));
         painter.rect_stroke(
-            win_rect.shrink(0.5),
+            visible_win_rect,
             0.0,
-            Stroke::new(1.0, spec.window_controls.window_border),
-            StrokeKind::Middle,
+            Stroke::new(bw, spec.window_controls.window_border),
+            StrokeKind::Inside,
         );
     }
 }
@@ -737,6 +753,13 @@ mod tests {
                 }
             }
         }
+
+        assert_eq!(bottom_frame_occluded_px(true, false, 1.0), 0.0);
+        assert_eq!(bottom_frame_occluded_px(false, true, 1.5), 0.0);
+        assert_eq!(bottom_frame_occluded_px(false, false, 1.0), 2.0);
+        assert_eq!(bottom_frame_occluded_px(false, false, 1.25), 2.0);
+        assert_eq!(bottom_frame_occluded_px(false, false, 1.5), 3.0);
+        assert_eq!(bottom_frame_occluded_px(false, false, 2.0), 3.0);
     }
 
     #[test]
@@ -844,16 +867,25 @@ mod tests {
                 let mp_bot_pad = (tb_bot - 1) - mp_max;
                 let mp_diff = mp_top_pad.abs_diff(mp_bot_pad);
 
-                // ---- 2. 底栏像素范围与组件测量 ----
+                // ---- 2. 底栏像素范围与组件测量（按 Windows 无边框还原态真实可见区 [sb_top, h - bot_occluded]）----
                 let (sb_bg_c, has_sb_top) = match spec.status_bar {
                     StatusBarStyle::FloatingPill { bar_bg, top_border, .. } => (bar_bg, top_border.is_some()),
                     StatusBarStyle::FlushTelemetry { bar_bg, .. } => (bar_bg, true),
                 };
                 let sb_bar_rgb = to_rgb(sb_bg_c);
                 let sb_h_px = (STATUS_BAR_H * ppp).round() as usize;
+                let bot_occluded = bottom_frame_occluded_px(false, false, ppp).round() as usize;
+                let sb_panel_top = h - sb_h_px - bot_occluded;
+                if has_sb_top {
+                    let row = img.get_pixel(mid_x as u32, sb_panel_top as u32).0;
+                    assert!(
+                        px_diff([row[0], row[1], row[2]], sb_bar_rgb) > 8,
+                        "{fname} expected status top border at compensated row y={sb_panel_top}"
+                    );
+                }
                 let sb_top_decor = if has_sb_top { (1.0 * ppp).round().max(1.0) as usize } else { 0 };
-                let sb_top = (h - sb_h_px) + sb_top_decor;
-                let sb_bot = h - outer_px;
+                let sb_top = sb_panel_top + sb_top_decor;
+                let sb_bot = h - bot_occluded;
 
                 // 2a. 底栏左侧路径文字墨迹
                 let lx0 = (CHROME.status_h_margin * ppp).round() as usize;
