@@ -1174,13 +1174,19 @@ impl ManualState {
                 left_ui.add_space(8.0);
                 let mut job = (*src_job).clone();
                 job.wrap.max_width = f32::INFINITY;
+                job.halign = Align::LEFT;
+                let src_galley = left_ui.fonts_mut(|f| f.layout_job(job));
+                let needs_src_scroll = src_galley.size().x > inner_col_w + 0.5;
+                let src_vis = theme::configure_horizontal_scroll(&mut left_ui, needs_src_scroll);
                 egui::ScrollArea::horizontal()
                     .id_salt(("manual_src_scroll", idx))
+                    .scroll_bar_visibility(src_vis)
                     .auto_shrink([false, true])
                     .show(&mut left_ui, |ui| {
-                        ui.add(egui::Label::new(job).selectable(true).extend());
+                        ui.add(egui::Label::new(src_galley).selectable(true));
                     });
-                let left_bottom = left_ui.min_rect().bottom().max(left_ui.cursor().top()) + pad_y;
+                let src_pad_bottom = if needs_src_scroll { (pad_y - 3.0).max(4.0) } else { pad_y };
+                let left_bottom = left_ui.min_rect().bottom().max(left_ui.cursor().top()) + src_pad_bottom;
 
                 // 右栏：效果预览（复用主预览完全相同的解析和渲染逻辑）
                 let mut right_ui = ui.new_child(
@@ -1398,5 +1404,122 @@ mod tests {
         let p_inl = build_insert_patch(&s_inl, 2..4, "**加粗**", InsertMode::Inline);
         p_inl.apply(&mut s_inl);
         assert_eq!(s_inl, "重要**加粗**");
+    }
+
+    #[test]
+    fn horizontal_scrollbar_reserves_space_below_source_text_when_overflowing() {
+        let render_bold_italic_card_h = |win_width: f32| -> f32 {
+            let ctx = egui::Context::default();
+            crate::fonts::setup(&ctx);
+            crate::theme::apply(&ctx, ThemeId::CarbonGold);
+            let mut state = ManualState::default();
+            state.ensure_loaded();
+            state.query = "粗斜体".into();
+            let entry_idx = state
+                .data
+                .as_ref()
+                .unwrap()
+                .entries
+                .iter()
+                .position(|e| e.id == "style-bold-italic")
+                .expect("style-bold-italic entry exists");
+
+            let cfg = ManualViewCfg {
+                editor_font_size: 16.0,
+                editor_font_family: "",
+                preview_font_size: 13.0,
+                line_height: 1.5,
+                para_spacing: 0.75,
+                sup_sub: false,
+                front_matter: true,
+                code_line_numbers: true,
+                max_content_width: 0.0,
+                allow_esc_clear: true,
+            };
+
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(win_width, 900.0))),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    state.show(ui, &cfg);
+                });
+            });
+            out.textures_delta.clear();
+            state.card_heights[entry_idx].expect("style-bold-italic card height measured on first frame")
+        };
+
+        // 1600px 下「源码」与「效果预览」均单行不超宽；940px 下仅「源码」超宽出现横向滚动条
+        let wide_h = render_bold_italic_card_h(1600.0);
+        let overflow_h = render_bold_italic_card_h(940.0);
+        let delta = overflow_h - wide_h;
+        assert!(
+            delta >= theme::H_SCROLL_ALLOCATED_HEIGHT - 3.5,
+            "expected overflowing card ({overflow_h}) to reserve space below text compared to wide ({wide_h}), delta={delta}"
+        );
+
+        // 直接验证横向 ScrollArea 在超宽与不超宽时的几何预留高度，确保不叠压文字
+        let ctx = egui::Context::default();
+        crate::fonts::setup(&ctx);
+        crate::theme::apply(&ctx, ThemeId::CarbonGold);
+        let measure_scroll_box = |needs_scroll: bool| -> (Rect, Rect) {
+            let mut text_rect = Rect::NOTHING;
+            let mut scope_rect = Rect::NOTHING;
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(600.0, 400.0))),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    scope_rect = ui
+                        .scope(|ui| {
+                            ui.set_width(220.0);
+                            let text = if needs_scroll {
+                                "这是 ***非常重要*** 的提示，或 ___同样效果___。"
+                            } else {
+                                "短示例"
+                            };
+                            let font = FontId::new(16.0, FontFamily::Name("editor".into()));
+                            let galley = ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), font, egui::Color32::WHITE));
+                            let actual_needs = galley.size().x > ui.available_width() + 0.5;
+                            assert_eq!(actual_needs, needs_scroll);
+                            let vis = theme::configure_horizontal_scroll(ui, actual_needs);
+                            egui::ScrollArea::horizontal()
+                                .id_salt(("test_h_scroll", needs_scroll))
+                                .scroll_bar_visibility(vis)
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| {
+                                    text_rect = ui.add(egui::Label::new(galley).selectable(true)).rect;
+                                });
+                        })
+                        .response
+                        .rect;
+                });
+            });
+            out.textures_delta.clear();
+            (text_rect, scope_rect)
+        };
+
+        let (short_text, short_box) = measure_scroll_box(false);
+        assert!(
+            (short_box.bottom() - short_text.bottom()).abs() < 0.5,
+            "non-overflowing box should add 0px height: text={}, box={}",
+            short_text.bottom(),
+            short_box.bottom()
+        );
+
+        let (long_text, long_box) = measure_scroll_box(true);
+        let reserved_below_text = long_box.bottom() - long_text.bottom();
+        assert!(
+            (reserved_below_text - theme::H_SCROLL_ALLOCATED_HEIGHT).abs() < 0.5,
+            "overflowing box should reserve {}px below text, got {reserved_below_text}",
+            theme::H_SCROLL_ALLOCATED_HEIGHT
+        );
+        assert!(
+            reserved_below_text > theme::H_SCROLL_BAR_WIDTH + 3.0,
+            "reserved space ({reserved_below_text}) must clear expanded bar ({}) without touching text",
+            theme::H_SCROLL_BAR_WIDTH
+        );
     }
 }

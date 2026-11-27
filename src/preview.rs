@@ -492,6 +492,8 @@ fn render_code(ui: &mut egui::Ui, lang: &str, code: &str, th: &Theme, line_numbe
         s.format.line_height = Some(line_h);
     }
     job.wrap.max_width = f32::INFINITY;
+    job.halign = Align::LEFT;
+    let code_galley = ui.fonts_mut(|f| f.layout_job(job));
 
     let resp = egui::Frame::new()
         .fill(th.code_bg)
@@ -500,6 +502,19 @@ fn render_code(ui: &mut egui::Ui, lang: &str, code: &str, th: &Theme, line_numbe
         .inner_margin(egui::Margin { left: 14, right: 14, top: 12, bottom: 12 })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
+            let show_code_scroll = |ui: &mut egui::Ui| {
+                ui.scope(|ui| {
+                    let needs_scroll = code_galley.size().x > ui.available_width() + 0.5;
+                    let vis = theme::configure_horizontal_scroll(ui, needs_scroll);
+                    egui::ScrollArea::horizontal()
+                        .id_salt(("code_scroll", code.as_ptr() as usize))
+                        .scroll_bar_visibility(vis)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            ui.add(egui::Label::new(code_galley).selectable(true));
+                        });
+                });
+            };
             if line_numbers {
                 let n_lines = code.split('\n').count().max(1);
                 let digits = n_lines.to_string().len().max(2);
@@ -519,18 +534,10 @@ fn render_code(ui: &mut egui::Ui, lang: &str, code: &str, th: &Theme, line_numbe
                     let h = n_lines as f32 * line_h;
                     ui.painter().vline(x, top..=(top + h), Stroke::new(1.0, th.border));
                     ui.add_space(10.0);
-                    egui::ScrollArea::horizontal()
-                        .id_salt(("code_scroll", code.as_ptr() as usize))
-                        .show(ui, |ui| {
-                            ui.add(egui::Label::new(job).selectable(true));
-                        });
+                    show_code_scroll(ui);
                 });
             } else {
-                egui::ScrollArea::horizontal()
-                    .id_salt(("code_scroll", code.as_ptr() as usize))
-                    .show(ui, |ui| {
-                        ui.add(egui::Label::new(job).selectable(true));
-                    });
+                show_code_scroll(ui);
             }
         })
         .response;
@@ -864,45 +871,52 @@ fn render_table(ui: &mut egui::Ui, aligns: &[Alignment], head: &[Inline], rows: 
     }
     let total_w: f32 = widths.iter().map(|w| w + pad.x * 2.0).sum();
 
-    egui::ScrollArea::horizontal().id_salt(("table", head.as_ptr() as usize)).show(ui, |ui| {
-        let mut table_rect = Rect::NOTHING;
-        for (ri, row) in galleys.iter().enumerate() {
-            let row_h = row.iter().flatten().map(|(g, _)| g.size().y).fold(th.line_height(), f32::max) + pad.y * 2.0;
-            let (row_rect, _) = ui.allocate_exact_size(vec2(total_w, row_h), Sense::hover());
-            table_rect = table_rect.union(row_rect);
-            if ri == 0 {
-                ui.painter().rect_filled(row_rect, 0, th.table_head_bg);
-            } else if ri % 2 == 0 {
-                ui.painter().rect_filled(row_rect, 0, th.table_stripe_bg);
-            }
-            let mut x = row_rect.left();
-            for c in 0..ncols {
-                let cw = widths[c] + pad.x * 2.0;
-                if c > 0 {
-                    ui.painter().vline(x, row_rect.y_range(), Stroke::new(1.0, th.border));
+    ui.scope(|ui| {
+        let needs_scroll = total_w > ui.available_width() + 0.5;
+        let vis = theme::configure_horizontal_scroll(ui, needs_scroll);
+        egui::ScrollArea::horizontal()
+            .id_salt(("table", head.as_ptr() as usize))
+            .scroll_bar_visibility(vis)
+            .show(ui, |ui| {
+                let mut table_rect = Rect::NOTHING;
+                for (ri, row) in galleys.iter().enumerate() {
+                    let row_h = row.iter().flatten().map(|(g, _)| g.size().y).fold(th.line_height(), f32::max) + pad.y * 2.0;
+                    let (row_rect, _) = ui.allocate_exact_size(vec2(total_w, row_h), Sense::hover());
+                    table_rect = table_rect.union(row_rect);
+                    if ri == 0 {
+                        ui.painter().rect_filled(row_rect, 0, th.table_head_bg);
+                    } else if ri % 2 == 0 {
+                        ui.painter().rect_filled(row_rect, 0, th.table_stripe_bg);
+                    }
+                    let mut x = row_rect.left();
+                    for c in 0..ncols {
+                        let cw = widths[c] + pad.x * 2.0;
+                        if c > 0 {
+                            ui.painter().vline(x, row_rect.y_range(), Stroke::new(1.0, th.border));
+                        }
+                        if let Some((g, rich)) = &row[c] {
+                            let off = match aligns.get(c) {
+                                Some(Alignment::Center) => (widths[c] - g.size().x) / 2.0,
+                                Some(Alignment::Right) => widths[c] - g.size().x,
+                                _ => 0.0,
+                            };
+                            let pos = pos2(x + pad.x + off, row_rect.top() + pad.y);
+                            let mut child = ui.new_child(UiBuilder::new().max_rect(Rect::from_min_size(pos, g.size() + vec2(1.0, 1.0))));
+                            show_galley(&mut child, g.clone(), rich, rcx);
+                        }
+                        x += cw;
+                    }
+                    if ri > 0 {
+                        ui.painter().hline(row_rect.x_range(), row_rect.top(), Stroke::new(1.0, th.border));
+                    }
+                    for cell in all[ri] {
+                        for a in &cell.anchors {
+                            rcx.check_scroll(ui, a, row_rect);
+                        }
+                    }
                 }
-                if let Some((g, rich)) = &row[c] {
-                    let off = match aligns.get(c) {
-                        Some(Alignment::Center) => (widths[c] - g.size().x) / 2.0,
-                        Some(Alignment::Right) => widths[c] - g.size().x,
-                        _ => 0.0,
-                    };
-                    let pos = pos2(x + pad.x + off, row_rect.top() + pad.y);
-                    let mut child = ui.new_child(UiBuilder::new().max_rect(Rect::from_min_size(pos, g.size() + vec2(1.0, 1.0))));
-                    show_galley(&mut child, g.clone(), rich, rcx);
-                }
-                x += cw;
-            }
-            if ri > 0 {
-                ui.painter().hline(row_rect.x_range(), row_rect.top(), Stroke::new(1.0, th.border));
-            }
-            for cell in all[ri] {
-                for a in &cell.anchors {
-                    rcx.check_scroll(ui, a, row_rect);
-                }
-            }
-        }
-        ui.painter().rect_stroke(table_rect, 4, Stroke::new(1.0, th.border), StrokeKind::Inside);
+                ui.painter().rect_stroke(table_rect, 4, Stroke::new(1.0, th.border), StrokeKind::Inside);
+            });
     });
 }
 

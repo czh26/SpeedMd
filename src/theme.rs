@@ -2167,6 +2167,34 @@ pub fn sidebar_visuals(ctx: &egui::Context) -> &'static Visuals {
     &PREBUILT[current_id(ctx).index()].sidebar_visuals
 }
 
+/// 横向滚动块（说明书源码框、预览代码块、宽表格）的展开滑块高度与底部预留高度。
+pub const H_SCROLL_BAR_WIDTH: f32 = 6.0;
+pub const H_SCROLL_ALLOCATED_HEIGHT: f32 = 11.0;
+
+/// 按内容是否超宽局部配置当前 `Ui` 的横向滚动条间距，并返回对应的 `ScrollBarVisibility`：
+/// - `needs_scroll = true`：保留主题悬浮半透明配色（`floating = true`），展开高度 `6px`、静默高度 `3px`，
+///   并在内容正下方立即预留 `11px` 高度（与末行文字保持至少 `5px` 净间距，首帧即生效无跳变）。
+/// - `needs_scroll = false`：隐藏滚动条且预留高度为 `0px`，不改变原有紧凑高度。
+pub fn configure_horizontal_scroll(
+    ui: &mut egui::Ui,
+    needs_scroll: bool,
+) -> egui::scroll_area::ScrollBarVisibility {
+    let scroll = &mut ui.spacing_mut().scroll;
+    scroll.floating = true;
+    scroll.bar_outer_margin = 0.0;
+    if needs_scroll {
+        scroll.bar_width = H_SCROLL_BAR_WIDTH;
+        scroll.floating_width = 3.0;
+        scroll.floating_allocated_width = H_SCROLL_ALLOCATED_HEIGHT;
+        egui::scroll_area::ScrollBarVisibility::AlwaysVisible
+    } else {
+        scroll.bar_width = 0.0;
+        scroll.floating_width = 0.0;
+        scroll.floating_allocated_width = 0.0;
+        egui::scroll_area::ScrollBarVisibility::AlwaysHidden
+    }
+}
+
 // ============================================================================
 // 物理像素对齐、字形墨迹垂直居中与矢量图标辅助
 // ============================================================================
