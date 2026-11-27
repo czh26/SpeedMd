@@ -48,7 +48,7 @@ pub fn tab_titles(docs: &[Document]) -> Vec<String> {
         .collect()
 }
 
-pub fn show(ui: &mut egui::Ui, top_bar_bottom: f32, docs: &[Document], active: usize) -> Option<TabAction> {
+pub fn show(ui: &mut egui::Ui, top_bar_bottom: f32, docs: &[Document], active: usize) -> (Option<TabAction>, f32) {
     let mut action: Option<TabAction> = None;
     let titles = tab_titles(docs);
     let spec = theme::current(ui.ctx());
@@ -59,9 +59,17 @@ pub fn show(ui: &mut egui::Ui, top_bar_bottom: f32, docs: &[Document], active: u
         .ctx()
         .data_mut(|d| d.get_temp::<DragState>(drag_id).map(|s| s.dragging_uid).unwrap_or(None));
     let mut rects: Vec<Rect> = Vec::with_capacity(docs.len());
+    let avail_w = ui.available_width();
+    let min_title_w = if avail_w < 120.0 { 32.0 } else { 48.0 };
+    let mut occupied_right_x = ui.max_rect().left();
 
     egui::ScrollArea::horizontal()
         .id_salt("tabs_scroll")
+        .scroll_source(egui::scroll_area::ScrollSource {
+            scroll_bar: false,
+            drag: egui::scroll_area::DragScroll::Never,
+            mouse_wheel: true,
+        })
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
         .show(ui, |ui| {
             ui.horizontal_centered(|ui| {
@@ -75,7 +83,7 @@ pub fn show(ui: &mut egui::Ui, top_bar_bottom: f32, docs: &[Document], active: u
                     let label = format!("{prefix}{}", titles[i]);
                     let measure_font = if is_active { &active_font } else { &font };
                     let galley = ui.fonts_mut(|f| f.layout_no_wrap(label, measure_font.clone(), tc.active_fg));
-                    let title_w = galley.size().x.clamp(48.0, 220.0);
+                    let title_w = galley.size().x.clamp(min_title_w, 220.0);
                     let close_w = 18.0;
                     let total_w = title_w + close_w + 18.0;
 
@@ -238,6 +246,7 @@ pub fn show(ui: &mut egui::Ui, top_bar_bottom: f32, docs: &[Document], active: u
 
                 // 极简「+」新建标签按钮
                 let (plus_rect, plus_resp) = ui.allocate_exact_size(vec2(26.0, TAB_H), Sense::click());
+                occupied_right_x = plus_rect.right();
                 if plus_resp.hovered() {
                     ui.painter().rect_filled(plus_rect.shrink(2.0), 6.0, tc.hover_bg);
                     ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
@@ -256,7 +265,7 @@ pub fn show(ui: &mut egui::Ui, top_bar_bottom: f32, docs: &[Document], active: u
         });
 
     ui.ctx().data_mut(|d| d.insert_temp(drag_id, DragState { dragging_uid: drag }));
-    action
+    (action, occupied_right_x)
 }
 
 fn paint_active_tab(painter: &egui::Painter, r: Rect, top_bar_bottom: f32, spec: &theme::ThemeSpec) {

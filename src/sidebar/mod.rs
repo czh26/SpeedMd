@@ -6,7 +6,7 @@ pub mod outline;
 
 use crate::markdown::{bold_family, Heading};
 use crate::settings::SidebarTab;
-use crate::theme::{self, SIDEBAR_DEFAULT_W, SIDEBAR_HEADER_H, SIDEBAR_MAX_W, SIDEBAR_MIN_W};
+use crate::theme::{self, SIDEBAR_DEFAULT_W, SIDEBAR_HEADER_H};
 use crate::winutil;
 use articles::{ArticlesAction, ArticlesState};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, CursorIcon, FontId, Frame, Margin, Rect, Sense, Stroke};
@@ -100,10 +100,11 @@ impl SidebarState {
         let spec = theme::current(ctx);
         let sc = &spec.sidebar;
 
+        let (min_w, max_w) = crate::window_frame::effective_sidebar_bounds(ui.available_width());
         let panel_resp = egui::Panel::left("sidebar")
             .resizable(true)
-            .default_size(SIDEBAR_DEFAULT_W)
-            .size_range(SIDEBAR_MIN_W..=SIDEBAR_MAX_W)
+            .default_size(SIDEBAR_DEFAULT_W.clamp(min_w, max_w))
+            .size_range(min_w..=max_w)
             .show_separator_line(false)
             .frame(Frame::new().fill(sc.bg).inner_margin(Margin::ZERO))
             .show(ui, |ui| {
@@ -112,8 +113,9 @@ impl SidebarState {
                 // 顶部紧凑分段条：文件 | 文章 | 大纲 + 右对齐 📂
                 let (hdr_rect, _) =
                     ui.allocate_exact_size(vec2(ui.available_width(), SIDEBAR_HEADER_H), Sense::hover());
+                let compact_sb = hdr_rect.width() < 185.0;
                 let folder_rect = Rect::from_min_size(
-                    pos2(hdr_rect.right() - 32.0, hdr_rect.top() + 5.0),
+                    pos2(hdr_rect.right() - if compact_sb { 28.0 } else { 32.0 }, hdr_rect.top() + 5.0),
                     vec2(24.0, 24.0),
                 );
                 let folder_resp = ui.interact(folder_rect, ui.make_persistent_id("sb_open_folder"), Sense::click());
@@ -137,7 +139,9 @@ impl SidebarState {
                     (SidebarTab::Articles, "文章"),
                     (SidebarTab::Outline, "大纲"),
                 ];
-                let mut x = hdr_rect.left() + 10.0;
+                let tab_pad = if compact_sb { 6.0 } else { 12.0 };
+                let tab_gap = if compact_sb { 2.0 } else { 4.0 };
+                let mut x = hdr_rect.left() + if compact_sb { 6.0 } else { 10.0 };
                 for (t_val, t_label) in tabs {
                     let is_cur = *tab == t_val;
                     let font = if is_cur {
@@ -149,7 +153,7 @@ impl SidebarState {
                         .fonts_mut(|f| f.layout_no_wrap(t_label.into(), font.clone(), sc.fg))
                         .size()
                         .x
-                        + 12.0;
+                        + tab_pad;
                     let r = Rect::from_min_size(pos2(x, hdr_rect.top() + 3.0), vec2(w, SIDEBAR_HEADER_H - 4.0));
                     let resp = ui.interact(r, ui.make_persistent_id(("sb_tab", t_label)), Sense::click());
                     if resp.hovered() {
@@ -175,7 +179,7 @@ impl SidebarState {
                     if resp.clicked() {
                         *tab = t_val;
                     }
-                    x += w + 4.0;
+                    x += w + tab_gap;
                 }
 
                 ui.painter().hline(hdr_rect.x_range(), hdr_rect.bottom() - 0.5, Stroke::new(1.0, sc.border));

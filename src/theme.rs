@@ -291,6 +291,40 @@ pub struct ModeSwitchStyle {
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
+pub struct WindowControlStyle {
+    pub corner_radius: u8,
+    pub button_width: f32,
+    pub button_height: f32,
+    pub button_gap: f32,
+    pub section_gap: f32,
+    pub right_margin: f32,
+    pub icon_stroke_width: f32,
+    pub bg_idle: Color32,
+    pub stroke_idle: Stroke,
+    pub icon_idle_fg: Color32,
+    pub icon_unfocused_fg: Color32,
+    /// 03 左右分色适配：万一布局落在左侧深色栏时的兼容前景色与悬停底色
+    pub on_left_split_idle_fg: Color32,
+    pub on_left_split_unfocused_fg: Color32,
+    pub on_left_split_hover_bg: Color32,
+    pub bg_hover: Color32,
+    pub stroke_hover: Stroke,
+    pub icon_hover_fg: Color32,
+    pub hover_shadow: Shadow,
+    pub top_highlight_hover: Option<Color32>,
+    pub bg_active: Color32,
+    pub stroke_active: Stroke,
+    pub icon_active_fg: Color32,
+    pub close_bg_hover: Color32,
+    pub close_stroke_hover: Stroke,
+    pub close_icon_hover: Color32,
+    pub close_bg_active: Color32,
+    pub close_icon_active: Color32,
+    /// Win10 无 DWM 圆角时的 1px 降级窗口外边框色
+    pub window_border: Color32,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum DividerStyle {
     /// 01：2px 点状虚线
     Dotted { color: Color32, step: f32 },
@@ -533,6 +567,7 @@ pub struct ThemeSpec {
     pub top_bar_bottom_line: TopBarBottomLine,
     pub active_tab_style: ActiveTabStyle,
     pub mode_switch: ModeSwitchStyle,
+    pub window_controls: WindowControlStyle,
     pub divider: DividerStyle,
     pub status_bar: StatusBarStyle,
     pub sidebar: SidebarColors,
@@ -568,6 +603,7 @@ const ZEN_HORIZON: ThemeSpec = {
     let selection_bg = mix(canvas, accent, 20, 100);
     let disabled_fg = mix(canvas, muted, 50, 100);
     let border = hex(0xEAE5DA);
+    let strong_fg = hex(0x110F0E);
     let soft_shadow = Shadow { offset: [0, 2], blur: 8, spread: 0, color: alpha(hex(0x1C1917), 18) };
     let alerts = AlertColors {
         note: hex(0x0284C7),
@@ -576,6 +612,7 @@ const ZEN_HORIZON: ThemeSpec = {
         warning: hex(0xD97706),
         caution: hex(0xDC2626),
     };
+    let close_red = alerts.caution;
 
     ThemeSpec {
         id: ThemeId::ZenHorizon,
@@ -593,7 +630,7 @@ const ZEN_HORIZON: ThemeSpec = {
         faint_bg: mix(canvas, callout, 55, 100),
         border,
         text_fg: text,
-        strong_fg: hex(0x110F0E),
+        strong_fg,
         muted_fg: muted,
         disabled_fg,
         accent,
@@ -616,6 +653,39 @@ const ZEN_HORIZON: ThemeSpec = {
             inactive_fg: muted,
             outer_radius: 10,
             inner_radius: 7,
+        },
+        // 派生规则（01 无界疾风窗口控制按钮）：
+        // icon_idle = mix(muted, text, 65%), unfocused = mix(canvas, muted, 58%)
+        // hover 采用纯白柔影胶囊 + 珊瑚橙 42% 边框点缀；关闭采用 alerts.caution 鲜明危险红
+        window_controls: WindowControlStyle {
+            corner_radius: 10,
+            button_width: 30.0,
+            button_height: TOP_PILL_H,
+            button_gap: 4.0,
+            section_gap: 8.0,
+            right_margin: 10.0,
+            icon_stroke_width: 1.35,
+            bg_idle: Color32::TRANSPARENT,
+            stroke_idle: Stroke::NONE,
+            icon_idle_fg: mix(muted, text, 65, 100),
+            icon_unfocused_fg: mix(canvas, muted, 58, 100),
+            on_left_split_idle_fg: mix(muted, text, 65, 100),
+            on_left_split_unfocused_fg: mix(canvas, muted, 58, 100),
+            on_left_split_hover_bg: surface,
+            bg_hover: surface,
+            stroke_hover: stroke(1.0, mix(border, accent, 42, 100)),
+            icon_hover_fg: strong_fg,
+            hover_shadow: soft_shadow,
+            top_highlight_hover: None,
+            bg_active: active_bg,
+            stroke_active: stroke(1.0, accent),
+            icon_active_fg: strong_fg,
+            close_bg_hover: close_red,
+            close_stroke_hover: stroke(1.0, mix(close_red, text, 14, 100)),
+            close_icon_hover: on_accent,
+            close_bg_active: mix(close_red, text, 20, 100),
+            close_icon_active: on_accent,
+            window_border: mix(border, text, 14, 100),
         },
         divider: DividerStyle::Dotted { color: split_dot, step: 2.0 },
         status_bar: StatusBarStyle::FloatingPill {
@@ -810,6 +880,38 @@ const SCARLET_STREAK: ThemeSpec = {
             outer_radius: 10,
             inner_radius: 7,
         },
+        // 派生规则（02 白昼疾影窗口控制按钮）：
+        // hover 使用纯白胶囊配绯红 45% 混边；关闭 hover 使用主题绯红 + 35% 神速力金描边
+        window_controls: WindowControlStyle {
+            corner_radius: 10,
+            button_width: 30.0,
+            button_height: TOP_PILL_H,
+            button_gap: 4.0,
+            section_gap: 8.0,
+            right_margin: 10.0,
+            icon_stroke_width: 1.35,
+            bg_idle: Color32::TRANSPARENT,
+            stroke_idle: Stroke::NONE,
+            icon_idle_fg: mix(muted, text, 60, 100),
+            icon_unfocused_fg: mix(chrome, muted, 58, 100),
+            on_left_split_idle_fg: mix(muted, text, 60, 100),
+            on_left_split_unfocused_fg: mix(chrome, muted, 58, 100),
+            on_left_split_hover_bg: canvas,
+            bg_hover: canvas,
+            stroke_hover: stroke(1.0, mix(border, accent, 45, 100)),
+            icon_hover_fg: hex(0x09090B),
+            hover_shadow: soft_shadow,
+            top_highlight_hover: None,
+            bg_active: active_bg,
+            stroke_active: stroke(1.0, accent),
+            icon_active_fg: hex(0x09090B),
+            close_bg_hover: accent,
+            close_stroke_hover: stroke(1.0, mix(accent, gold, 35, 100)),
+            close_icon_hover: on_accent,
+            close_bg_active: alerts.caution,
+            close_icon_active: on_accent,
+            window_border: mix(border, text, 14, 100),
+        },
         divider: DividerStyle::Solid(border),
         status_bar: StatusBarStyle::FloatingPill {
             bar_bg: chrome,
@@ -961,6 +1063,7 @@ const ATELIER_CONTRAST: ThemeSpec = {
     let selection_bg = mix(page_bg, accent, 22, 100);
     let disabled_fg = mix(page_bg, muted, 50, 100);
     let soft_shadow = Shadow { offset: [0, 2], blur: 6, spread: 0, color: alpha(hex(0x221E1C), 16) };
+    let close_red = hex(0xC23B2B);
     let alerts = AlertColors {
         note: hex(0x0369A1),
         tip: accent, // 与 03 效果图 TIP 陶土铜竖条一致
@@ -1011,6 +1114,38 @@ const ATELIER_CONTRAST: ThemeSpec = {
             inactive_fg: muted,
             outer_radius: 9,
             inner_radius: 6,
+        },
+        // 派生规则（03 半山书房窗口控制按钮）：
+        // 右侧悬停使用暖砂岩胶囊 + 陶土铜 50% 边框；左侧兼备胡桃木暖米字色；关闭使用窑变朱砂红 close_red
+        window_controls: WindowControlStyle {
+            corner_radius: 9,
+            button_width: 30.0,
+            button_height: TOP_PILL_H,
+            button_gap: 4.0,
+            section_gap: 8.0,
+            right_margin: 10.0,
+            icon_stroke_width: 1.35,
+            bg_idle: Color32::TRANSPARENT,
+            stroke_idle: Stroke::NONE,
+            icon_idle_fg: mix(muted, text, 65, 100),
+            icon_unfocused_fg: mix(tab_strip, muted, 58, 100),
+            on_left_split_idle_fg: mix(left_muted, left_fg, 70, 100),
+            on_left_split_unfocused_fg: mix(left_bg, left_muted, 58, 100),
+            on_left_split_hover_bg: mix(left_bg, left_fg, 10, 100),
+            bg_hover: sandstone,
+            stroke_hover: stroke(1.0, mix(split_line, accent, 50, 100)),
+            icon_hover_fg: hex(0x161311),
+            hover_shadow: soft_shadow,
+            top_highlight_hover: None,
+            bg_active: active_bg,
+            stroke_active: stroke(1.0, accent),
+            icon_active_fg: hex(0x161311),
+            close_bg_hover: close_red,
+            close_stroke_hover: stroke(1.0, mix(close_red, text, 16, 100)),
+            close_icon_hover: on_accent,
+            close_bg_active: mix(close_red, text, 22, 100),
+            close_icon_active: on_accent,
+            window_border: mix(split_line, text, 14, 100),
         },
         divider: DividerStyle::Solid(split_line),
         status_bar: StatusBarStyle::FloatingPill {
@@ -1116,7 +1251,7 @@ const ATELIER_CONTRAST: ThemeSpec = {
         semantic: SemanticColors {
             success: hex(0x2F7D4C),
             warn: hex(0xB45309),
-            error: hex(0xC23B2B),
+            error: close_red,
             dirty_dot: accent,
         },
         export_css: ExportCssPalette {
@@ -1165,6 +1300,9 @@ const CARBON_GOLD: ThemeSpec = {
         caution: hex(0xF87171),
     };
 
+    let strong_fg = hex(0xFFFDF8);
+    let close_bg = mix(canvas, alerts.caution, 52, 100);
+
     ThemeSpec {
         id: ThemeId::CarbonGold,
         is_dark: true,
@@ -1181,7 +1319,7 @@ const CARBON_GOLD: ThemeSpec = {
         faint_bg: tab_active,
         border,
         text_fg: text,
-        strong_fg: hex(0xFFFDF8),
+        strong_fg,
         muted_fg: muted,
         disabled_fg,
         accent,
@@ -1204,6 +1342,38 @@ const CARBON_GOLD: ThemeSpec = {
             inactive_fg: muted,
             outer_radius: 8,
             inner_radius: 5,
+        },
+        // 派生规则（04 黑金疾电窗口控制按钮）：
+        // hover 使用 hover_bg + 76% 透明度香槟金描边，按下图标转为鎏金；关闭采用低饱和暗石榴红 mix(canvas, caution, 52%)
+        window_controls: WindowControlStyle {
+            corner_radius: 8,
+            button_width: 30.0,
+            button_height: TOP_PILL_H,
+            button_gap: 4.0,
+            section_gap: 8.0,
+            right_margin: 10.0,
+            icon_stroke_width: 1.35,
+            bg_idle: Color32::TRANSPARENT,
+            stroke_idle: Stroke::NONE,
+            icon_idle_fg: mix(muted, text, 65, 100),
+            icon_unfocused_fg: mix(chrome, muted, 55, 100),
+            on_left_split_idle_fg: mix(muted, text, 65, 100),
+            on_left_split_unfocused_fg: mix(chrome, muted, 55, 100),
+            on_left_split_hover_bg: hover_bg,
+            bg_hover: hover_bg,
+            stroke_hover: stroke(1.0, alpha(accent, 195)),
+            icon_hover_fg: strong_fg,
+            hover_shadow: Shadow::NONE,
+            top_highlight_hover: None,
+            bg_active: active_bg,
+            stroke_active: stroke(1.0, accent),
+            icon_active_fg: accent,
+            close_bg_hover: close_bg,
+            close_stroke_hover: stroke(1.0, mix(border, accent, 55, 100)),
+            close_icon_hover: strong_fg,
+            close_bg_active: mix(close_bg, alerts.caution, 25, 100),
+            close_icon_active: strong_fg,
+            window_border: mix(border, accent, 26, 100),
         },
         divider: DividerStyle::Solid(border),
         status_bar: StatusBarStyle::FlushTelemetry {
@@ -1358,6 +1528,9 @@ const TITANIUM_GLASS: ThemeSpec = {
         caution: hex(0xF2F2F7),
     };
 
+    let err_red = hex(0xF87171);
+    let close_bg = mix(chassis, err_red, 48, 100);
+
     ThemeSpec {
         id: ThemeId::TitaniumGlass,
         is_dark: true,
@@ -1397,6 +1570,38 @@ const TITANIUM_GLASS: ThemeSpec = {
             inactive_fg: muted,
             outer_radius: 10,
             inner_radius: 7,
+        },
+        // 派生规则（05 钛晶流光窗口控制按钮）：
+        // hover 为烟熏玻璃 active_pill + 15% 珍珠银描边 + 上缘 22% 珍珠银高光；关闭使用低饱和烟熏玫瑰钛红 mix(chassis, err_red, 48%)
+        window_controls: WindowControlStyle {
+            corner_radius: 10,
+            button_width: 30.0,
+            button_height: TOP_PILL_H,
+            button_gap: 4.0,
+            section_gap: 8.0,
+            right_margin: 10.0,
+            icon_stroke_width: 1.35,
+            bg_idle: Color32::TRANSPARENT,
+            stroke_idle: Stroke::NONE,
+            icon_idle_fg: mix(muted, text, 68, 100),
+            icon_unfocused_fg: mix(chassis, muted, 55, 100),
+            on_left_split_idle_fg: mix(muted, text, 68, 100),
+            on_left_split_unfocused_fg: mix(chassis, muted, 55, 100),
+            on_left_split_hover_bg: active_pill,
+            bg_hover: active_pill,
+            stroke_hover: stroke(1.0, rim_stroke),
+            icon_hover_fg: accent,
+            hover_shadow: glass_shadow,
+            top_highlight_hover: Some(top_highlight),
+            bg_active: mix(active_pill, accent, 14, 100),
+            stroke_active: stroke(1.0, top_highlight),
+            icon_active_fg: accent,
+            close_bg_hover: close_bg,
+            close_stroke_hover: stroke(1.0, alpha(accent, 68)),
+            close_icon_hover: accent,
+            close_bg_active: mix(close_bg, err_red, 25, 100),
+            close_icon_active: accent,
+            window_border: mix(border, accent, 20, 100),
         },
         divider: DividerStyle::GlassInset {
             chassis_bg: chassis,
@@ -1865,6 +2070,26 @@ mod tests {
         let on_acc2 = contrast_ratio(s2.preview.on_accent, s2.accent);
         eprintln!("WCAG ScarletStreak on_accent/accent={on_acc2:.2}");
         assert!(on_acc2 >= 4.5);
+    }
+
+    #[test]
+    fn window_controls_meet_wcag_contrast() {
+        for id in ThemeId::ALL {
+            let s = id.spec();
+            let wc = &s.window_controls;
+            let idle = contrast_ratio(wc.icon_idle_fg, s.top_bar_bg);
+            let hover = contrast_ratio(wc.icon_hover_fg, wc.bg_hover);
+            let close_hover = contrast_ratio(wc.close_icon_hover, wc.close_bg_hover);
+            let left_idle = contrast_ratio(wc.on_left_split_idle_fg, s.sidebar.bg);
+            eprintln!(
+                "WCAG WinCtrl {id:?}: idle={idle:.2}, hover={hover:.2}, close_hover={close_hover:.2}, left_idle={left_idle:.2}"
+            );
+
+            assert!(idle >= 3.0, "{id:?} win_ctrl idle {idle:.2}");
+            assert!(hover >= 4.5, "{id:?} win_ctrl hover {hover:.2}");
+            assert!(close_hover >= 4.5, "{id:?} win_ctrl close_hover {close_hover:.2}");
+            assert!(left_idle >= 4.5, "{id:?} win_ctrl left_idle {left_idle:.2}");
+        }
     }
 
     #[test]

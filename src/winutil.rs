@@ -79,3 +79,28 @@ pub fn move_to_trash(path: &Path) -> Result<(), String> {
         Err(format!("移入回收站失败（错误码 {rc}）：{}", clean.display()))
     }
 }
+
+/// 在 Windows 11 上通过 DWM 属性恢复无边框窗口圆角与系统阴影；在 Windows 10 或不支持环境返回 `false`。
+pub fn try_enable_rounded_corners(wh: &impl raw_window_handle::HasWindowHandle) -> bool {
+    use raw_window_handle::RawWindowHandle;
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND};
+
+    let Ok(handle) = wh.window_handle() else {
+        return false;
+    };
+    let RawWindowHandle::Win32(win32) = handle.as_raw() else {
+        return false;
+    };
+    let hwnd = win32.hwnd.get() as HWND;
+    let pref = DWMWCP_ROUND;
+    let hr = unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+            (&raw const pref).cast(),
+            core::mem::size_of_val(&pref) as u32,
+        )
+    };
+    hr == 0
+}

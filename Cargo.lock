@@ -1439,6 +1439,7 @@ dependencies = [
  "image",
  "notify",
  "pulldown-cmark",
+ "raw-window-handle",
  "read-fonts",
  "regex",
  "rfd",

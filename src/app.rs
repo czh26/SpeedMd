@@ -14,15 +14,18 @@ use crate::sidebar::{SidebarAction, SidebarState};
 use crate::stats::{self, StatsOptions};
 use crate::tabs::{self, TabAction};
 use crate::theme::{
-    self, DividerStyle, StatusBarStyle, ThemeId, TopBarBottomLine, PANE_INSET, SIDEBAR_DEFAULT_W, SIDEBAR_MAX_W,
-    SIDEBAR_MIN_W, STATUS_BAR_H, STATUS_PILL_H, TOP_BAR_H, TOP_PILL_H,
+    self, DividerStyle, StatusBarStyle, ThemeId, TopBarBottomLine, PANE_INSET, SIDEBAR_DEFAULT_W, STATUS_BAR_H,
+    STATUS_PILL_H, TOP_BAR_H,
+};
+use crate::window_frame::{
+    self, WindowControlBtn, MANUAL_RIGHT_RESIZE_EDGE_PX, RESIZE_CORNER_PX, RESIZE_EDGE_PX,
 };
 use crate::winutil;
 use eframe::egui::{
     self,
     text::{CCursor, CCursorRange},
-    pos2, vec2, Align, Align2, CursorIcon, FontId, Frame, Margin, Popup, PopupCloseBehavior, PopupKind, Rect,
-    RectAlign, Sense, SetOpenCommand, Stroke, StrokeKind, UiBuilder,
+    pos2, vec2, Align, Align2, CursorIcon, FontId, Frame, Margin, PointerButton, Popup, PopupCloseBehavior,
+    PopupKind, Rect, RectAlign, Sense, SetOpenCommand, Stroke, StrokeKind, UiBuilder, ViewportCommand,
 };
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -92,12 +95,17 @@ pub struct MdApp {
     sidebar_width: f32,
     open_menu_once: bool,
     open_theme_menu_once: bool,
+    use_system_titlebar_active: bool,
+    dwm_rounded: bool,
+    dwm_checked: bool,
+    test_hover_btn: Option<WindowControlBtn>,
+    test_unfocused: bool,
     shot: Option<ShotRunner>,
     bench: Option<BenchRunner>,
 }
 
 impl MdApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, use_system_titlebar: bool) -> Self {
         let shot_path = std::env::var_os("MDPAD_SCREENSHOT").map(PathBuf::from);
         let bench_typing = std::env::var("MDPAD_BENCH").as_deref() == Ok("typing");
         let is_test = shot_path.is_some() || bench_typing;
@@ -122,6 +130,7 @@ impl MdApp {
 
         if is_test {
             settings = Settings::default();
+            settings.use_system_titlebar = use_system_titlebar;
             match std::env::var("MDPAD_MODE").as_deref() {
                 Ok("edit") => settings.mode = ViewMode::Edit,
                 Ok("preview") => settings.mode = ViewMode::Preview,
@@ -148,6 +157,9 @@ impl MdApp {
         cc.egui_ctx.set_zoom_factor(settings.ui_zoom);
 
         let keymap = Keymap::from_overrides(&settings.keybindings);
+        let dwm_rounded = if use_system_titlebar { true } else { winutil::try_enable_rounded_corners(cc) };
+        let test_hover_btn = std::env::var("MDPAD_TEST_HOVER").ok().and_then(|s| WindowControlBtn::from_env_str(&s));
+        let test_unfocused = std::env::var("MDPAD_TEST_UNFOCUSED").as_deref() == Ok("1");
         let shot = shot_path.map(|path| ShotRunner { path, frames: 0, commands: test_cmds, ran_commands: false });
         let bench = bench_typing.then(|| BenchRunner::new(bench_out));
         let needs_custom_fonts = !settings.preview_font_family.is_empty()
@@ -184,6 +196,11 @@ impl MdApp {
             sidebar_width: SIDEBAR_DEFAULT_W,
             open_menu_once: false,
             open_theme_menu_once: false,
+            use_system_titlebar_active: use_system_titlebar,
+            dwm_rounded,
+            dwm_checked: false,
+            test_hover_btn,
+            test_unfocused,
             shot,
             bench,
         };
@@ -926,15 +943,31 @@ impl MdApp {
         let spec = theme::current(&ctx);
         let (top_rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), TOP_BAR_H), Sense::hover());
 
-        let left_zone_w = if self.settings.sidebar_open {
-            self.sidebar_width.clamp(SIDEBAR_MIN_W, SIDEBAR_MAX_W)
-        } else {
-            SIDEBAR_DEFAULT_W
-        };
+        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        let focused = if self.shot.is_some() { !self.test_unfocused } else { ctx.input(|i| i.focused) };
+        let layout = window_frame::compute_top_bar_layout(
+            top_rect,
+            self.settings.sidebar_open,
+            self.sidebar_width,
+            !self.use_system_titlebar_active,
+            maximized,
+            &spec.window_controls,
+        );
+
+        // 最先注册顶栏空白区域拖拽/双击/右键热区（未最大化时避开外围 5px 缩放感应条），后续子按钮与标签会自动覆盖其各自区域
+        let bar_bg_resp = (!self.use_system_titlebar_active).then(|| {
+            let edge = if maximized { 0.0 } else { RESIZE_EDGE_PX };
+            let drag_rect = Rect::from_min_max(
+                pos2(top_rect.left() + edge, top_rect.top() + edge),
+                pos2(top_rect.right() - edge, top_rect.bottom()),
+            );
+            ui.interact(drag_rect, ui.make_persistent_id("top_bar_drag"), Sense::click_and_drag())
+        });
+
         let split_left_active = spec.top_bar_left_bg.is_some() && self.settings.sidebar_open;
         if let Some(left_bg) = spec.top_bar_left_bg.filter(|_| split_left_active) {
-            let left_bg_r = Rect::from_min_max(top_rect.min, pos2(top_rect.left() + left_zone_w, top_rect.max.y));
-            let right_bg_r = Rect::from_min_max(pos2(top_rect.left() + left_zone_w, top_rect.min.y), top_rect.max);
+            let left_bg_r = Rect::from_min_max(top_rect.min, pos2(top_rect.left() + layout.split_bg_width, top_rect.max.y));
+            let right_bg_r = Rect::from_min_max(pos2(top_rect.left() + layout.split_bg_width, top_rect.min.y), top_rect.max);
             ui.painter().rect_filled(left_bg_r, 0.0, left_bg);
             ui.painter().rect_filled(right_bg_r, 0.0, spec.top_bar_bg);
         } else {
@@ -947,7 +980,7 @@ impl MdApp {
             TopBarBottomLine::Solid { color, left_override } => {
                 let y = top_rect.bottom() - 0.5;
                 if split_left_active && let Some(lc) = left_override {
-                    let div_x = top_rect.left() + left_zone_w;
+                    let div_x = top_rect.left() + layout.split_bg_width;
                     ui.painter().hline(top_rect.left()..=div_x, y, Stroke::new(1.0, lc));
                     ui.painter().hline(div_x..=top_rect.right(), y, Stroke::new(1.0, color));
                 } else {
@@ -967,22 +1000,21 @@ impl MdApp {
             }
         }
 
-        // 左区（220px 或侧栏等宽）：徽标 + MdPad 字标 + ≡ 菜单钮
-        let left_rect = Rect::from_min_size(top_rect.min, vec2(left_zone_w, TOP_BAR_H));
+        // 左区：徽标 + MdPad 字标 + ≡ 菜单钮
         let left_fg = if split_left_active { spec.top_bar_left_fg } else { spec.text_fg };
         let left_hover = if split_left_active { spec.sidebar.hover_bg } else { spec.hover_bg };
 
-        let badge_rect = Rect::from_min_size(pos2(left_rect.left() + 14.0, left_rect.center().y - 11.0), vec2(22.0, 22.0));
-        theme::paint_brand_badge(ui.painter(), badge_rect, spec);
+        theme::paint_brand_badge(ui.painter(), layout.badge_rect, spec);
+        let wordmark_size = if layout.left_controls_rect.width() < 160.0 { 14.5 } else { 15.5 };
         ui.painter().text(
-            pos2(badge_rect.right() + 8.0, left_rect.center().y),
+            layout.wordmark_pos,
             Align2::LEFT_CENTER,
             APP_NAME,
-            FontId::new(15.5, bold_family()),
+            FontId::new(wordmark_size, bold_family()),
             left_fg,
         );
 
-        let menu_btn_rect = Rect::from_min_size(pos2(left_rect.right() - 36.0, left_rect.center().y - 14.0), vec2(28.0, 28.0));
+        let menu_btn_rect = layout.menu_btn_rect;
         let menu_resp = ui.interact(menu_btn_rect, ui.make_persistent_id("top_hamburger_menu"), Sense::click());
         if menu_resp.hovered() {
             ui.painter().rect_filled(menu_btn_rect, 6.0, left_hover);
@@ -1147,36 +1179,78 @@ impl MdApp {
             });
         menu_resp.on_hover_text("菜单（文件 / 编辑 / 视图 / 主题 / 设置 / 帮助）");
 
-        // 右区：定宽分段模式胶囊（编辑 | 分屏 | 预览）+ ⚡ 主题切换钮
-        let mode_w = 144.0;
-        let theme_w = 28.0;
-        let right_pad = 12.0;
-        let gap = 8.0;
-        let theme_rect = Rect::from_min_size(
-            pos2(top_rect.right() - right_pad - theme_w, top_rect.center().y - TOP_PILL_H * 0.5),
-            vec2(theme_w, TOP_PILL_H),
-        );
-        let mode_rect = Rect::from_min_size(
-            pos2(theme_rect.left() - gap - mode_w, top_rect.center().y - TOP_PILL_H * 0.5),
-            vec2(mode_w, TOP_PILL_H),
-        );
-
-        self.paint_mode_switch(ui, mode_rect, spec);
-        self.theme_toggle_button_at(ui, theme_rect);
+        // 右区：分段模式胶囊（编辑 | 分屏 | 预览）+ ⚡ 主题切换钮 + 自定义窗口三按钮
+        self.paint_mode_switch(ui, layout.mode_rect, spec);
+        self.theme_toggle_button_at(ui, layout.theme_btn_rect);
+        if let Some(btns) = &layout.window_buttons {
+            let split_x = split_left_active.then_some(top_rect.left() + layout.split_bg_width);
+            if let Some(vp_cmd) = window_frame::paint_window_controls(
+                ui,
+                btns,
+                spec,
+                split_x,
+                maximized,
+                focused,
+                self.test_hover_btn,
+            ) {
+                ctx.send_viewport_cmd(vp_cmd);
+            }
+        }
 
         // 中区：水平滚动多文档标签栏（03 下激活标签直通 top_rect.bottom()）
-        let center_rect = Rect::from_min_max(
-            pos2(left_rect.right() + 8.0, top_rect.top()),
-            pos2(mode_rect.left() - 10.0, top_rect.bottom()),
-        );
-        if center_rect.width() > 24.0 {
+        let mut occupied_tabs_right = layout.tabs_rect.left();
+        if layout.tabs_rect.width() > 24.0 {
             let mut center_ui = ui.new_child(
                 UiBuilder::new()
-                    .max_rect(center_rect)
+                    .max_rect(layout.tabs_rect)
                     .layout(egui::Layout::left_to_right(Align::Center)),
             );
-            center_ui.set_clip_rect(ui.clip_rect().intersect(center_rect));
-            self.tab_bar(&mut center_ui, top_rect.bottom());
+            center_ui.set_clip_rect(ui.clip_rect().intersect(layout.tabs_rect));
+            occupied_tabs_right = self.tab_bar(&mut center_ui, top_rect.bottom());
+        }
+
+        // 处理顶栏空白区域拖动、双击最大化/还原、仿系统右键菜单
+        if let Some(bg_resp) = bar_bg_resp {
+            let in_blank_zone = |p: eframe::egui::Pos2| {
+                let on_resize = !maximized
+                    && window_frame::hit_test_resize_border(
+                        ctx.content_rect(),
+                        p,
+                        RESIZE_EDGE_PX,
+                        RESIZE_CORNER_PX,
+                        None,
+                        MANUAL_RIGHT_RESIZE_EDGE_PX,
+                    )
+                    .is_some();
+                let in_occupied_tabs = p.x >= layout.tabs_rect.left() && p.x <= occupied_tabs_right;
+                !on_resize && !in_occupied_tabs
+            };
+            if bg_resp.drag_started_by(PointerButton::Primary)
+                && bg_resp.interact_pointer_pos().is_some_and(in_blank_zone)
+            {
+                ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+            } else if bg_resp.double_clicked() && bg_resp.interact_pointer_pos().is_some_and(in_blank_zone) {
+                ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+            }
+            bg_resp.context_menu(|ui| {
+                if ui.add_enabled(maximized, egui::Button::new("还原")).clicked() {
+                    ctx.send_viewport_cmd(ViewportCommand::Maximized(false));
+                    ui.close();
+                }
+                if ui.button("最小化").clicked() {
+                    ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
+                    ui.close();
+                }
+                if ui.add_enabled(!maximized, egui::Button::new("最大化")).clicked() {
+                    ctx.send_viewport_cmd(ViewportCommand::Maximized(true));
+                    ui.close();
+                }
+                ui.separator();
+                if ui.add(egui::Button::new("关闭").shortcut_text("Alt+F4")).clicked() {
+                    ctx.send_viewport_cmd(ViewportCommand::Close);
+                    ui.close();
+                }
+            });
         }
 
         if let Some(cmd) = pending_cmd {
@@ -1340,8 +1414,9 @@ impl MdApp {
         ));
     }
 
-    fn tab_bar(&mut self, ui: &mut egui::Ui, top_bar_bottom: f32) {
-        let Some(action) = tabs::show(ui, top_bar_bottom, &self.docs, self.active) else { return };
+    fn tab_bar(&mut self, ui: &mut egui::Ui, top_bar_bottom: f32) -> f32 {
+        let (action_opt, occupied_right) = tabs::show(ui, top_bar_bottom, &self.docs, self.active);
+        let Some(action) = action_opt else { return occupied_right };
         match action {
             TabAction::Select(i) => {
                 if i < self.docs.len() {
@@ -1367,6 +1442,7 @@ impl MdApp {
             TabAction::Reveal(p) => winutil::reveal_in_explorer(&p),
             TabAction::Move { from, to } => self.move_tab(from, to),
         }
+        occupied_right
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
@@ -1379,7 +1455,7 @@ impl MdApp {
             StatusBarStyle::FlushTelemetry { bar_bg, top_border, .. } => (bar_bg, Some(top_border)),
         };
 
-        let left_zone_w = self.sidebar_width.clamp(SIDEBAR_MIN_W, SIDEBAR_MAX_W);
+        let left_zone_w = window_frame::clamp_sidebar_width(bar_rect.width(), self.sidebar_width);
         let split_left_active = spec.top_bar_left_bg.is_some() && self.settings.sidebar_open;
         if let Some(left_bg) = spec.top_bar_left_bg.filter(|_| split_left_active) {
             let l_rect = Rect::from_min_max(bar_rect.min, pos2(bar_rect.left() + left_zone_w, bar_rect.max.y));
@@ -1848,6 +1924,16 @@ impl MdApp {
                     if chosen_theme != self.settings.theme {
                         self.set_theme(ctx, chosen_theme);
                     }
+                    let prev_sys_titlebar = self.settings.use_system_titlebar;
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.settings.use_system_titlebar, "使用系统标题栏");
+                        if self.settings.use_system_titlebar != self.use_system_titlebar_active {
+                            ui.label(egui::RichText::new("重启后生效").color(theme::current(ctx).semantic.warn));
+                        }
+                    });
+                    if self.settings.use_system_titlebar != prev_sys_titlebar {
+                        window_frame::save_startup_use_system_titlebar(APP_NAME, self.settings.use_system_titlebar);
+                    }
                     ui.separator();
 
                     ui.label(egui::RichText::new("字体").strong());
@@ -2248,8 +2334,14 @@ fn build_100k_bench_doc() -> String {
 }
 
 impl eframe::App for MdApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let cpu_start = self.bench_pre_frame();
+        if !self.dwm_checked {
+            self.dwm_checked = true;
+            if !self.use_system_titlebar_active && !self.dwm_rounded {
+                self.dwm_rounded = winutil::try_enable_rounded_corners(frame);
+            }
+        }
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
 
@@ -2318,9 +2410,10 @@ impl eframe::App for MdApp {
         self.sidebar.poll_watchers(ctx);
 
         if self.settings.sidebar_open {
+            let win_w = ctx.content_rect().width();
             self.sidebar_width = egui::containers::panel::PanelState::load(ctx, ui.make_persistent_id("sidebar"))
-                .map_or(self.sidebar_width, |s| s.size().x)
-                .clamp(SIDEBAR_MIN_W, SIDEBAR_MAX_W);
+                .map_or(self.sidebar_width, |s| s.size().x);
+            self.sidebar_width = window_frame::clamp_sidebar_width(win_w, self.sidebar_width);
         }
 
         let theme_before_top = self.settings.theme;
@@ -2489,12 +2582,33 @@ impl eframe::App for MdApp {
         self.settings_window(ctx);
         self.shortcuts_ui.window_ui(ctx, &mut self.keymap, &mut self.error);
         self.stats_popup_window(ctx);
+
+        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        let manual_body_y = self.doc().is_manual.then(|| {
+            let win_r = ctx.content_rect();
+            let top = win_r.top() + TOP_BAR_H;
+            let bot = (win_r.bottom() - STATUS_BAR_H).max(top);
+            top..=bot
+        });
+        window_frame::handle_window_frame_chrome(
+            ctx,
+            self.use_system_titlebar_active,
+            self.dwm_rounded,
+            maximized,
+            manual_body_y,
+        );
+
         self.self_test_screenshot(ctx);
         self.bench_post_frame(ctx, cpu_start);
     }
 
+    fn persist_egui_memory(&self) -> bool {
+        self.shot.is_none() && self.bench.is_none()
+    }
+
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         if self.shot.is_none() && self.bench.is_none() {
+            window_frame::save_startup_use_system_titlebar(APP_NAME, self.settings.use_system_titlebar);
             self.settings.keybindings = self.keymap.to_overrides();
             if self.settings.restore_tabs {
                 let mut paths = Vec::new();

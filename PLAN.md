@@ -372,3 +372,29 @@ cargo test                     # stats / keymap / find / textproc / html_inline 
 - **性能与体积回归**：
   - `MDPAD_BENCH=typing`（`100,300` 字符、`200` 样本）：`cpu_ms` 平均 `5.55 ms`（P50 `5.42 ms`，P95 `6.79 ms`），`wall_ms` 平均 `16.63 ms`（P50 `16.66 ms`，P95 `17.21 ms`），未较第 8 节基线（`6.46 ms` / `16.65 ms`）退化。
   - **质量验证**：`cargo clippy --all-targets -- -D warnings` 零警告、`cargo build --release` 零警告、`cargo test` 49 项单元测试全部通过；`target/release/mdpad.exe` 体积为 `13,438,976` 字节（约 `12.82 MB`）。
+
+---
+
+## 11. 自定义标题栏（无边框集成顶栏 + 全主题窗口控件）
+
+- **无边框窗口与安全回退**：
+  - `src/main.rs` 依据启动标记录 `use_system_titlebar`（`src/window_frame.rs` 的 `load_startup_use_system_titlebar` / `save_startup_use_system_titlebar` 与 `use_system_titlebar.flag`）设置 `.with_decorations(use_system_titlebar)` 与 `.with_resizable(true)`，并保留最小尺寸约束及 `ViewportCommand::Title` 同步任务栏/Alt+Tab 标题；在自动截图或指定 `MDPAD_WIDTH` / `MDPAD_HEIGHT` / `MDPAD_BENCH=typing` 时隔离 `persistence_path` 并返回 `persist_egui_memory() -> false`，避免读取或污染用户的持久化窗口几何。
+  - `src/settings.rs` 新增 `pub use_system_titlebar: bool`（默认 `false`），设置窗口提供「使用系统标题栏」勾选框与「重启后生效」提示；启用后下次启动恢复原生系统标题栏，顶栏不再绘制自定义三键与空白区窗口热区。
+- **全主题窗口控件 `ThemeSpec::window_controls`（`src/theme.rs`）**：
+  - 新增 `WindowControlStyle` 结构体，5 套主题色值均由现有主题 Token 派生：常态保持克制通透，悬停/按下提供 100 ms `ctx.animate_bool_with_time` 平滑过渡；关闭按钮采用各主题专属危险色并在悬停时切换高对比度白色图标；`AtelierContrast` 针对左深右浅顶栏分别派生左右两侧背景与前景色；失焦时图标柔化弱化。
+  - **实测 WCAG 2.1 对比度（常态 / 悬停 / 关闭悬停）**：
+    - `ZenHorizon`：`11.02` / `19.12` / `4.83`（左区常态 `11.02`）
+    - `ScarletStreak`：`10.28` / `19.90` / `4.83`（左区常态 `10.28`）
+    - `AtelierContrast`：`9.77` / `14.49` / `5.31`（左区常态 `11.05`）
+    - `CarbonGold`：`11.30` / `12.40` / `6.87`（左区常态 `11.30`）
+    - `TitaniumGlass`：`11.49` / `11.30` / `7.11`（左区常态 `11.49`）
+- **布局计算、交互热区与 Win11 DWM 圆角（`src/window_frame.rs`、`src/winutil.rs`、`src/app.rs`、`src/tabs.rs`、`src/sidebar/mod.rs`）**：
+  - `compute_top_bar_layout` 将「编辑 | 分屏 | 预览」、⚡ 主题按钮与「最小化 / 最大化-还原 / 关闭」纯函数化排布于顶栏右侧；最小宽 `480px` 下自动收敛侧栏上限（`effective_sidebar_bounds` 与 `clamp_sidebar_width`）并压缩标签最小宽度（禁止标签区左键拖拽滚动以便空白区响应拖动），确保右侧控件不重叠、不裁切且 `AtelierContrast` 上下深木色分界 `0.0px` 对齐。
+  - `paint_window_controls` 使用 `Painter` 绘制物理像素对齐矢量图标（最小化横线、最大化单框、还原双错位方框、关闭 `×`），在 100%–200% DPI 缩放下保持清晰；最大化状态下关闭按钮真实可点击热区延伸至窗口右上角（符合 Fitts 定律），同时支持 `MDPAD_TEST_HOVER` 与 `MDPAD_TEST_UNFOCUSED` 自动化截图覆盖悬停与失焦态。
+  - `handle_window_frame_chrome` 补齐顶栏空白区拖动（`ViewportCommand::StartDrag`，最大化拖动触发系统还原并移动，顶部预留 `RESIZE_EDGE_PX` 避免抢占上边缩放）、双击空白区切换最大化/还原、仿系统右键菜单（还原 / 最小化 / 最大化 / 关闭）以及 8 向窗口边框缩放（常规 `5px` 边 / `10px` L 形角，`is_manual` 模式下右侧缩放边收窄为 `3px` 以保护贴边滚动条；最大化时禁用缩放）。关闭按钮触发原有 `ViewportCommand::Close` 流程，保留未保存标签确认框与 `Alt+F4`。
+  - `src/winutil.rs` 新增 `try_enable_rounded_corners`，通过 `DwmSetWindowAttribute(DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND)` 在初始化与首帧尝试启用 Windows 11 原生圆角与阴影，Win10 等不支持环境静默降级为 1px 主题色外边框。
+- **回归验证与体积基线**：
+  - `cargo clippy --all-targets -- -D warnings` 零警告、`cargo test` 53 项单元测试全部通过。
+  - `MDPAD_BENCH=typing`（`100,300` 字符、`200` 样本）：`cpu_ms` 平均 `6.37 ms`（P50 `6.08 ms`，P95 `9.09 ms`），`wall_ms` 平均 `16.64 ms`（P50 `16.67 ms`，P95 `17.30 ms`），与原基线（`6.46 ms` / `16.65 ms`）持平。
+  - `cargo build --release` 零警告，`target/release/mdpad.exe` 体积为 `13,469,696` 字节（约 `12.85 MB`）。
+- **已知限制**：Windows 11 下鼠标悬停自定义「最大化」按钮不会弹出系统原生的 Snap Layouts（贴靠布局）浮层（因无边框客户端自绘按钮未向系统暴露 `WM_NCHITTEST -> HTMAXBUTTON` 热区）；`Win + ↑/↓/←/→` 快捷键贴靠与拖动窗口至屏幕边缘贴靠均正常可用。

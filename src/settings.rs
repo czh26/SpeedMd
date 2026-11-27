@@ -39,6 +39,9 @@ pub struct Settings {
     /// 日/夜热切换：夜间偏好主题（默认 04 黑金疾电）
     #[serde(default = "default_dark_theme", deserialize_with = "deserialize_dark_theme_fallback")]
     pub dark_theme: ThemeId,
+    /// 是否回退使用 Windows 系统原生标题栏（修改后重启生效）
+    #[serde(default)]
+    pub use_system_titlebar: bool,
     pub mode: ViewMode,
     pub editor_font_size: f32,
     pub preview_font_size: f32,
@@ -86,6 +89,7 @@ impl Default for Settings {
             theme: ThemeId::ZenHorizon,
             light_theme: ThemeId::ZenHorizon,
             dark_theme: ThemeId::CarbonGold,
+            use_system_titlebar: false,
             mode: ViewMode::Split,
             editor_font_size: 15.0,
             preview_font_size: 16.0,
@@ -147,7 +151,11 @@ mod tests {
 
         let invalid_json = r#"{ "theme": "no_such_theme_xyz", "editor_font_size": 21.0 }"#;
         let invalid: Settings = serde_json::from_str(invalid_json).unwrap();
+        assert!(!invalid.use_system_titlebar);
         assert_eq!(invalid.theme, ThemeId::ZenHorizon);
+
+        let sys_on: Settings = serde_json::from_str(r#"{ "use_system_titlebar": true }"#).unwrap();
+        assert!(sys_on.use_system_titlebar);
         assert!((invalid.editor_font_size - 21.0).abs() < 1e-6);
     }
 }
