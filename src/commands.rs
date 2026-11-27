@@ -47,6 +47,7 @@ pub enum Command {
     Theme05,
     OpenShortcuts,
     OpenSettings,
+    OpenWelcome,
     OpenManual,
 }
 
@@ -94,6 +95,7 @@ impl Command {
         Self::Theme05,
         Self::OpenShortcuts,
         Self::OpenSettings,
+        Self::OpenWelcome,
         Self::OpenManual,
     ];
 
@@ -141,6 +143,7 @@ impl Command {
             Self::Theme05 => "theme_05",
             Self::OpenShortcuts => "open_shortcuts",
             Self::OpenSettings => "open_settings",
+            Self::OpenWelcome => "open_welcome",
             Self::OpenManual => "open_manual",
         }
     }
@@ -193,6 +196,7 @@ impl Command {
             Self::Theme05 => "选择主题 05：钛晶流光",
             Self::OpenShortcuts => "快捷键设置…",
             Self::OpenSettings => "外观与编辑器设置…",
+            Self::OpenWelcome => "欢迎主页",
             Self::OpenManual => "语法说明书",
         }
     }
@@ -237,7 +241,7 @@ impl Command {
             | Self::Theme04
             | Self::Theme05 => "外观与主题",
             Self::OpenShortcuts | Self::OpenSettings => "设置",
-            Self::OpenManual => "帮助",
+            Self::OpenWelcome | Self::OpenManual => "帮助",
         }
     }
 
@@ -280,6 +284,7 @@ impl Command {
             Self::Theme01 | Self::Theme02 | Self::Theme03 | Self::Theme04 | Self::Theme05 => None,
             Self::OpenShortcuts => ctrl(Key::K),
             Self::OpenSettings => ctrl(Key::Comma),
+            Self::OpenWelcome => None,
             Self::OpenManual => Some(Shortcut::new(false, false, false, Key::F1)),
         }
     }

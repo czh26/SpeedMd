@@ -104,7 +104,8 @@ pub fn show(
                     } else {
                         0.0
                     };
-                    let title_w = (galley.size().x + dot_extra).clamp(min_title_w, CHROME.tab_title_max_w);
+                    let bolt_extra = if doc.is_welcome { 9.5 + 5.0 } else { 0.0 };
+                    let title_w = (galley.size().x + dot_extra + bolt_extra).clamp(min_title_w, CHROME.tab_title_max_w);
                     let close_w = CHROME.tab_close_width;
                     let total_w = CHROME.tab_pad_left + title_w + CHROME.tab_text_close_gap + close_w + CHROME.tab_pad_right;
 
@@ -125,13 +126,18 @@ pub fn show(
                     let hovered = title_resp.hovered() || close_resp.hovered();
 
                     // 按主题材质策略绘制标签底板（保证 pill_rect 与文字坐标 1:1 零跳动）
-                    if is_active {
+                    let tab_surface_bg = if is_active {
                         paint_active_tab(ui.painter(), pill_rect, top_bar_bottom, spec);
+                        tc.active_bg
                     } else if hovered {
                         ui.painter().rect_filled(pill_rect, CHROME.tab_idle_radius, tc.hover_bg);
+                        tc.hover_bg
                     } else if tc.idle_bg != Color32::TRANSPARENT {
                         ui.painter().rect_filled(pill_rect, CHROME.tab_idle_radius, tc.idle_bg);
-                    }
+                        tc.idle_bg
+                    } else {
+                        spec.top_bar_bg
+                    };
 
                     let clip_r = Rect::from_min_max(
                         pos2(pill_rect.left() + CHROME.tab_text_clip_pad_x, pill_rect.top()),
@@ -139,6 +145,14 @@ pub fn show(
                     );
                     let clipped = ui.painter().with_clip_rect(clip_r);
                     let mut text_x = pill_rect.left() + CHROME.tab_pad_left;
+                    if doc.is_welcome {
+                        let bolt_w = 9.5;
+                        let bolt_h = 13.5;
+                        let bolt_rect =
+                            Rect::from_min_size(pos2(text_x, pill_center_y - bolt_h * 0.5), vec2(bolt_w, bolt_h));
+                        theme::paint_bolt_on(&clipped, bolt_rect, theme::BOLT_YELLOW, tab_surface_bg);
+                        text_x += bolt_w + 5.0;
+                    }
                     if doc.dirty {
                         let dot_col = if is_active { tc.dirty_active } else { tc.dirty_idle };
                         let dot_cx = text_x + CHROME.tab_dirty_dot_radius;
@@ -205,7 +219,7 @@ pub fn show(
                             action = Some(TabAction::CloseRight(i));
                             ui.close();
                         }
-                        if !doc.is_manual {
+                        if !doc.is_special() {
                             ui.separator();
                             if ui.button("保存").clicked() {
                                 action = Some(TabAction::Save(i));

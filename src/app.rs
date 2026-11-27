@@ -10,7 +10,7 @@ use crate::keymap::Keymap;
 use crate::manual::{self, InsertMode, ManualAction, ManualState, ManualViewCfg, SettingDep};
 use crate::markdown::{bold_family, ParseOptions};
 use crate::preview::PreviewOptions;
-use crate::settings::{Settings, SidebarTab, ViewMode};
+use crate::settings::{RecentFile, Settings, SidebarTab, ViewMode};
 use crate::sidebar::{SidebarAction, SidebarState};
 use crate::stats::{self, StatsOptions};
 use crate::tabs::{self, TabAction};
@@ -18,6 +18,7 @@ use crate::theme::{
     self, DividerStyle, StatusBarStyle, ThemeId, TopBarBottomLine, CHROME, PANE_INSET, SIDEBAR_DEFAULT_W,
     STATUS_BAR_H, TOP_BAR_H,
 };
+use crate::welcome::{self, WelcomeAction};
 use crate::window_frame::{
     self, WindowControlBtn, MANUAL_RIGHT_RESIZE_EDGE_PX, RESIZE_CORNER_PX, RESIZE_EDGE_PX,
 };
@@ -250,10 +251,16 @@ impl MdApp {
         }
 
         if app.docs.is_empty() {
-            app.docs.push(Document::new_empty());
+            let needs_editor_for_test =
+                winutil::app_env_os("FIND_QUERY").is_some() || winutil::app_env_os("ANCHOR").is_some();
+            if needs_editor_for_test {
+                app.docs.push(Document::new_empty());
+            } else {
+                app.docs.push(Document::new_welcome());
+            }
             app.active = 0;
         }
-        if !app.doc().is_manual {
+        if !app.doc().is_special() {
             app.last_doc_uid = Some(app.doc().uid);
         }
 
@@ -330,7 +337,9 @@ impl MdApp {
     }
 
     fn open_file_silent(&mut self, path: PathBuf) {
-        if let Ok(doc) = Self::read_doc_from_disk(&path) {
+        let clean = winutil::clean_path(&path);
+        if let Ok(doc) = Self::read_doc_from_disk(&clean) {
+            self.settings.ensure_recent_seeded(&clean);
             self.push_or_activate_doc(doc);
         }
     }
@@ -339,10 +348,14 @@ impl MdApp {
         let clean = winutil::clean_path(&path);
         if let Some(idx) = self.find_open_tab(&clean) {
             self.active = idx;
+            self.settings.record_recent_file(&clean);
             return;
         }
         match Self::read_doc_from_disk(&clean) {
-            Ok(doc) => self.push_or_activate_doc(doc),
+            Ok(doc) => {
+                self.settings.record_recent_file(&clean);
+                self.push_or_activate_doc(doc);
+            }
             Err(msg) => self.error = Some(msg),
         }
     }
@@ -381,13 +394,21 @@ impl MdApp {
         }
     }
 
-    fn new_tab(&mut self) {
-        self.docs.push(Document::new_empty());
-        self.active = self.docs.len() - 1;
+    fn new_tab(&mut self, ctx: &egui::Context) {
+        if !self.docs.is_empty() && self.docs[self.active].is_welcome {
+            self.docs[self.active] = Document::new_empty();
+        } else {
+            self.docs.push(Document::new_empty());
+            self.active = self.docs.len() - 1;
+        }
+        if self.settings.mode != ViewMode::Preview {
+            let ed_id = editor::editor_id(self.docs[self.active].uid);
+            ctx.memory_mut(|m| m.request_focus(ed_id));
+        }
     }
 
     fn save_doc(&mut self, idx: usize) -> bool {
-        if self.docs.get(idx).is_none_or(|d| d.is_manual) {
+        if self.docs.get(idx).is_none_or(|d| d.is_special()) {
             return false;
         }
         if let Some(path) = self.docs[idx].path.clone() {
@@ -398,7 +419,7 @@ impl MdApp {
     }
 
     fn save_doc_as(&mut self, idx: usize) -> bool {
-        if self.docs.get(idx).is_none_or(|d| d.is_manual) {
+        if self.docs.get(idx).is_none_or(|d| d.is_special()) {
             return false;
         }
         let name = self.docs[idx]
@@ -431,6 +452,7 @@ impl MdApp {
         }
         match std::fs::write(&path, self.docs[idx].text.as_bytes()) {
             Ok(()) => {
+                self.settings.record_recent_file(&path);
                 self.docs[idx].path = Some(path);
                 self.docs[idx].title_hint = None;
                 self.docs[idx].dirty = false;
@@ -485,7 +507,11 @@ impl MdApp {
             self.closed_stack.push(p);
         }
         if self.docs.is_empty() {
-            self.docs.push(Document::new_empty());
+            if removed.is_welcome {
+                self.docs.push(Document::new_empty());
+            } else {
+                self.docs.push(Document::new_welcome());
+            }
             self.active = 0;
         } else if self.active >= self.docs.len() {
             self.active = self.docs.len() - 1;
@@ -506,6 +532,7 @@ impl MdApp {
     fn sync_tabs_after_rename(&mut self, old: &Path, new: &Path) {
         let old_clean = winutil::clean_path(old);
         let new_clean = winutil::clean_path(new);
+        self.settings.rename_recent(&old_clean, &new_clean);
         for d in &mut self.docs {
             if let Some(p) = &d.path {
                 if crate::sidebar::files::paths_eq(p, &old_clean) {
@@ -519,6 +546,7 @@ impl MdApp {
 
     fn sync_tabs_after_delete(&mut self, deleted: &Path) {
         let del_clean = winutil::clean_path(deleted);
+        self.settings.delete_recent_prefix(&del_clean);
         let mut to_close = Vec::new();
         for (i, d) in self.docs.iter_mut().enumerate() {
             let affected = d.path.as_ref().is_some_and(|p| {
@@ -535,7 +563,7 @@ impl MdApp {
         for idx in to_close.into_iter().rev() {
             self.docs.remove(idx);
             if self.docs.is_empty() {
-                self.docs.push(Document::new_empty());
+                self.docs.push(Document::new_welcome());
                 self.active = 0;
             } else if self.active >= self.docs.len() {
                 self.active = self.docs.len() - 1;
@@ -720,6 +748,17 @@ impl MdApp {
         doc.find.ensure_updated(ctx, &doc.text, doc.version, true);
     }
 
+    fn open_welcome(&mut self) {
+        if let Some(idx) = self.docs.iter().position(|d| d.is_welcome) {
+            self.active = idx;
+        } else if !self.docs.is_empty() && self.docs[self.active].can_reuse_as_blank() {
+            self.docs[self.active] = Document::new_welcome();
+        } else {
+            self.docs.push(Document::new_welcome());
+            self.active = self.docs.len() - 1;
+        }
+    }
+
     fn open_manual(&mut self) {
         self.manual.ensure_loaded();
         self.manual.focus_search = true;
@@ -736,11 +775,16 @@ impl MdApp {
         let target_idx = self
             .last_doc_uid
             .and_then(|uid| self.idx_by_uid(uid))
-            .filter(|&i| !self.docs[i].is_manual)
-            .or_else(|| self.docs.iter().rposition(|d| !d.is_manual))
+            .filter(|&i| !self.docs[i].is_special())
+            .or_else(|| self.docs.iter().rposition(|d| !d.is_special()))
             .unwrap_or_else(|| {
-                self.docs.push(Document::new_empty());
-                self.docs.len() - 1
+                if let Some(wi) = self.docs.iter().position(|d| d.is_welcome) {
+                    self.docs[wi] = Document::new_empty();
+                    wi
+                } else {
+                    self.docs.push(Document::new_empty());
+                    self.docs.len() - 1
+                }
             });
         if self.settings.mode == ViewMode::Preview {
             self.settings.mode = ViewMode::Split;
@@ -762,7 +806,7 @@ impl MdApp {
 
     fn adjust_font(&mut self, ctx: &egui::Context, delta: Option<f32>) {
         let pointer = ctx.pointer_latest_pos();
-        let target_preview = if self.doc().is_manual {
+        let target_preview = if self.doc().is_special() {
             true
         } else {
             match self.settings.mode {
@@ -783,11 +827,11 @@ impl MdApp {
     }
 
     pub fn run_command(&mut self, ctx: &egui::Context, cmd: Command) {
-        if self.doc().is_manual && !cmd.enabled_on_manual() {
+        if self.doc().is_special() && !cmd.enabled_on_manual() {
             return;
         }
         match cmd {
-            Command::NewTab | Command::New => self.new_tab(),
+            Command::NewTab | Command::New => self.new_tab(ctx),
             Command::CloseTab => self.request_close_tab(self.active),
             Command::ReopenClosedTab => self.reopen_closed_tab(),
             Command::NextTab => {
@@ -896,6 +940,7 @@ impl MdApp {
             Command::OpenShortcuts => {
                 self.shortcuts_ui.open = true;
             }
+            Command::OpenWelcome => self.open_welcome(),
             Command::OpenManual => self.open_manual(),
         }
     }
@@ -928,12 +973,27 @@ impl MdApp {
             self.run_command(ctx, cmd);
         }
 
-        // 拖放文件（支持一次拖入多个）
+        // 拖放文件或文件夹（支持一次拖入多个：.md 打开、.html 导入、文件夹设为工作目录）
         let dropped: Vec<PathBuf> = ctx.input(|i| {
             i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect()
         });
         for p in dropped {
-            self.open_file(p);
+            if p.is_dir() {
+                self.settings.workspace_folder = Some(winutil::clean_path(&p));
+                self.settings.sidebar_open = true;
+                self.settings.sidebar_tab = SidebarTab::Files;
+            } else if p
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("html") || e.eq_ignore_ascii_case("htm"))
+            {
+                let src = winutil::clean_path(&p);
+                self.jobs.spawn(ctx.clone(), move || match crate::import::import_html_file(&src) {
+                    Ok(doc) => crate::jobs::JobResult::ImportDone(doc),
+                    Err(e) => crate::jobs::JobResult::Failed(e),
+                });
+            } else {
+                self.open_file(p);
+            }
         }
 
         // 关闭窗口时若有未保存文档，拦截并弹窗确认
@@ -956,7 +1016,7 @@ impl MdApp {
     // ---------- 界面 ----------
 
     fn menu_btn(&self, ui: &mut egui::Ui, cmd: Command) -> bool {
-        let enabled = !self.doc().is_manual || cmd.enabled_on_manual();
+        let enabled = !self.doc().is_special() || cmd.enabled_on_manual();
         let btn = egui::Button::new(cmd.label()).shortcut_text(self.keymap.label(cmd));
         ui.add_enabled(enabled, btn).clicked()
     }
@@ -1237,6 +1297,10 @@ impl MdApp {
                     });
 
                 ui.menu_button("帮助", |ui| {
+                    if self.menu_btn(ui, Command::OpenWelcome) {
+                        pending_cmd = Some(Command::OpenWelcome);
+                        ui.close();
+                    }
                     if self.menu_btn(ui, Command::OpenManual) {
                         pending_cmd = Some(Command::OpenManual);
                         ui.close();
@@ -1336,7 +1400,7 @@ impl MdApp {
         content_bot_px: f32,
     ) {
         let ms = &spec.mode_switch;
-        let is_manual = self.doc().is_manual;
+        let is_special = self.doc().is_special();
         let ppp = ui.ctx().pixels_per_point().max(1.0);
         let compact = rect.width() <= CHROME.mode_switch_width_compact + 2.0;
         let font_sz = if compact { CHROME.mode_font_size_compact } else { CHROME.mode_font_size };
@@ -1352,22 +1416,22 @@ impl MdApp {
         let seg_w = rect.width() / 3.0;
         for (idx, (mode_val, label)) in items.iter().enumerate() {
             let seg_r = Rect::from_min_size(pos2(rect.left() + idx as f32 * seg_w, rect.top()), vec2(seg_w, rect.height()));
-            let sense = if is_manual { Sense::hover() } else { Sense::click() };
+            let sense = if is_special { Sense::hover() } else { Sense::click() };
             let resp = ui.interact(seg_r, ui.make_persistent_id(("mode_seg", label)), sense);
-            let active = !is_manual && self.settings.mode == *mode_val;
+            let active = !is_special && self.settings.mode == *mode_val;
 
             let inner_r = seg_r.shrink(CHROME.mode_inner_inset);
             if active {
                 ui.painter().rect_filled(inner_r, ms.inner_radius, ms.active_bg);
                 ui.painter().rect_stroke(inner_r, ms.inner_radius, ms.active_stroke, StrokeKind::Inside);
-            } else if !is_manual && resp.hovered() {
+            } else if !is_special && resp.hovered() {
                 ui.painter().rect_filled(inner_r, ms.inner_radius, spec.hover_bg);
             }
-            if !is_manual && resp.hovered() {
+            if !is_special && resp.hovered() {
                 ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
             }
             if idx > 0 {
-                let prev_active = !is_manual && self.settings.mode == items[idx - 1].0;
+                let prev_active = !is_special && self.settings.mode == items[idx - 1].0;
                 if !active && !prev_active {
                     ui.painter().vline(
                         seg_r.left(),
@@ -1377,7 +1441,7 @@ impl MdApp {
                 }
             }
 
-            let fg = if is_manual {
+            let fg = if is_special {
                 spec.disabled_fg
             } else if active {
                 ms.active_fg
@@ -1389,7 +1453,7 @@ impl MdApp {
             let label_x = theme::snap_px(seg_r.center().x - label_galley.size().x * 0.5, ppp);
             let label_y = theme::galley_ink_centered_pos_y(content_top_px, content_bot_px, &label_galley, ppp);
             ui.painter().galley(pos2(label_x, label_y), label_galley, fg);
-            if !is_manual && resp.clicked() {
+            if !is_special && resp.clicked() {
                 self.settings.mode = *mode_val;
             }
         }
@@ -1513,7 +1577,7 @@ impl MdApp {
                 let right: Vec<usize> = ((idx + 1)..self.docs.len()).collect();
                 self.request_close_batch(right);
             }
-            TabAction::NewTab => self.new_tab(),
+            TabAction::NewTab => self.new_tab(ui.ctx()),
             TabAction::Save(i) => {
                 if i < self.docs.len() {
                     self.save_doc(i);
@@ -1585,13 +1649,24 @@ impl MdApp {
             return;
         }
 
-        let full_path = doc.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "未保存的新文件".into());
+        let is_welcome = doc.is_welcome;
+        let full_path = if is_welcome {
+            if let Some(ws) = &self.settings.workspace_folder {
+                format!("工作目录：{} · 拖入文件即可打开", ws.display())
+            } else {
+                "准备就绪 · 支持拖入 .md / .html / 文件夹到窗口".into()
+            }
+        } else {
+            doc.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "未保存的新文件".into())
+        };
         let dirty = doc.dirty;
         let full = doc.stats.full;
         let sel = doc.stats.sel;
         let ms = if self.shot.is_some() { 0.2 } else { doc.parsed.last_parse_ms().max(0.1) };
 
-        let stats_text = if let Some(s) = sel {
+        let stats_text = if is_welcome {
+            format!("{ms:.1} ms · 极速引擎就绪")
+        } else if let Some(s) = sel {
             format!(
                 "{ms:.1} ms · 已选 {} 字 / 共 {} 字 · {} 行",
                 stats::format_thousands(s.words),
@@ -1660,7 +1735,7 @@ impl MdApp {
             let dirty_x = theme::snap_px(dot_cx + CHROME.status_dirty_dot_radius + CHROME.status_dirty_dot_text_gap, ppp);
             clipped.galley(pos2(dirty_x, dirty_y), dirty_galley, spec.semantic.dirty_dot);
         }
-        if doc.path.is_some() {
+        if !is_welcome && doc.path.is_some() {
             ui.interact(left_clip, ui.make_persistent_id("status_path_hover"), Sense::hover())
                 .on_hover_text(full_path);
         }
@@ -1693,12 +1768,14 @@ impl MdApp {
         let stats_y = theme::galley_ink_centered_pos_y(sb_top_px, sb_bot_px, &text_galley, ppp);
         ui.painter().galley(pos2(stats_x, stats_y), text_galley, pill_fg);
 
-        let r = ui.interact(pill_rect, ui.make_persistent_id("status_stats_pill"), Sense::click());
-        if r.hovered() {
-            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-        }
-        if r.on_hover_text("点击查看详细字数统计").clicked() {
-            self.stats_popup_open = !self.stats_popup_open;
+        if !is_welcome {
+            let r = ui.interact(pill_rect, ui.make_persistent_id("status_stats_pill"), Sense::click());
+            if r.hovered() {
+                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            }
+            if r.on_hover_text("点击查看详细字数统计").clicked() {
+                self.stats_popup_open = !self.stats_popup_open;
+            }
         }
     }
 
@@ -1782,6 +1859,50 @@ impl MdApp {
                     SettingDep::SupSub => self.settings.sup_sub = true,
                     SettingDep::FrontMatter => self.settings.front_matter = true,
                 },
+            }
+        }
+    }
+
+    fn welcome_pane(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let files_hovered = ctx.input(|i| !i.raw.hovered_files.is_empty());
+        let Some(act) = welcome::show(ui, &self.settings.recent_files, &self.keymap, files_hovered) else {
+            return;
+        };
+        match act {
+            WelcomeAction::RunCommand(cmd) => self.run_command(&ctx, cmd),
+            WelcomeAction::OpenRecent(path) => {
+                if path.is_file() {
+                    self.open_file(path);
+                } else {
+                    self.error = Some(format!("无法打开文件（文件不存在或已被移动）：\n{}", path.display()));
+                }
+            }
+            WelcomeAction::TogglePin(path) => self.settings.toggle_pin_recent(&path),
+            WelcomeAction::RemoveRecent(path) => self.settings.remove_recent(&path),
+            WelcomeAction::ClearUnpinnedRecents => self.settings.clear_unpinned_recents(),
+            WelcomeAction::CopyPath(path) => ctx.copy_text(path.display().to_string()),
+            WelcomeAction::RevealInExplorer(path) => winutil::reveal_in_explorer(&path),
+            WelcomeAction::CreateSampleDoc => {
+                let sample = "# ⚡ 欢迎使用 ThunderMD\n\n\
+                    这是一款由 **Rust + egui** 驱动的极速 Markdown 编辑器，专为高帧率长文编辑与舒适阅读而设计。\n\n\
+                    > [!TIP]\n\
+                    > 右侧预览中的任务复选框可以直接点击勾选，修改会即时同步到左侧源码。\n\n\
+                    ## 快速体验功能\n\n\
+                    - [x] 分屏实时渲染与 ==高亮标记== 语法\n\
+                    - [ ] 按 `F1` 打开内置语法说明书，支持一键插入片段\n\
+                    - [ ] 按 `Ctrl+K` 自定义全部快捷键，点击右上角 `⚡` 切换 5 套原生主题\n\n\
+                    ```rust\n\
+                    fn speed_of_light() -> &'static str {\n\
+                        \"ThunderMD · 毫秒级实时渲染\"\n\
+                    }\n\
+                    ```\n";
+                let mut doc = Document::from_imported("欢迎体验 ThunderMD".into(), sample.into(), None);
+                doc.dirty = false;
+                self.settings.mode = ViewMode::Split;
+                self.push_or_activate_doc(doc);
+                let ed_id = editor::editor_id(self.doc().uid);
+                ctx.memory_mut(|m| m.request_focus(ed_id));
             }
         }
     }
@@ -2465,7 +2586,7 @@ impl MdApp {
     }
 
     fn stats_popup_window(&mut self, ctx: &egui::Context) {
-        if !self.stats_popup_open {
+        if !self.stats_popup_open || self.doc().is_special() {
             return;
         }
         let mut open = self.stats_popup_open;
@@ -2563,6 +2684,30 @@ impl MdApp {
                     self.settings.use_system_titlebar = !self.use_system_titlebar_active;
                     self.settings.sup_sub = true;
                     self.demo_settings_scroll_frames = 6;
+                } else if id == "demo_welcome_recents" {
+                    let now = Settings::now_unix_secs();
+                    self.settings.recent_files = vec![
+                        RecentFile {
+                            path: PathBuf::from(r"C:\Notes\Tech-Notes\ThunderMD 渲染管线优化.md"),
+                            pinned: true,
+                            last_opened_unix: now.saturating_sub(720),
+                        },
+                        RecentFile {
+                            path: PathBuf::from(r"C:\Notes\Reading\2026 年度阅读书单.md"),
+                            pinned: false,
+                            last_opened_unix: now.saturating_sub(90_000),
+                        },
+                        RecentFile {
+                            path: PathBuf::from(r"C:\Docs\Product-Docs\API 接口规范 v2.md"),
+                            pinned: false,
+                            last_opened_unix: now.saturating_sub(3 * 86_400),
+                        },
+                        RecentFile {
+                            path: PathBuf::from(r"C:\Work\个人周报-W48.md"),
+                            pinned: false,
+                            last_opened_unix: now.saturating_sub(6 * 86_400),
+                        },
+                    ];
                 } else if let Some(cmd) = Command::from_id(&id) {
                     self.run_command(ctx, cmd);
                 }
@@ -2713,12 +2858,12 @@ impl eframe::App for MdApp {
             *ui.style_mut() = (*ctx.global_style()).clone();
         }
         self.update_title(ctx);
-        if !self.doc().is_manual {
+        if !self.doc().is_special() {
             self.last_doc_uid = Some(self.doc().uid);
         }
 
         let stats_opts = self.stats_opts();
-        if !self.doc().is_manual {
+        if !self.doc().is_special() {
             let sel_chars = editor::current_selection_chars(ctx, self.doc().uid, &self.doc().text);
             let doc = self.doc_mut();
             if doc.find.open {
@@ -2731,7 +2876,7 @@ impl eframe::App for MdApp {
             doc.stats.update_selection(&doc.text, doc.version, sel_bytes, stats_opts);
         }
 
-        if !self.doc().is_manual
+        if !self.doc().is_special()
             && (self.settings.mode == ViewMode::Edit
                 || (self.settings.sidebar_open && self.settings.sidebar_tab == SidebarTab::Outline))
         {
@@ -2770,7 +2915,7 @@ impl eframe::App for MdApp {
         if self.settings.theme != theme_before_top {
             *ui.style_mut() = (*ctx.global_style()).clone();
         }
-        if !self.doc().is_manual {
+        if !self.doc().is_special() {
             self.last_doc_uid = Some(self.doc().uid);
         }
         let ppp = ctx.pixels_per_point().max(1.0);
@@ -2849,25 +2994,6 @@ impl eframe::App for MdApp {
                     self.manual_pane(ui);
                     return;
                 }
-                if self.settings.mode != ViewMode::Preview {
-                    let find_action = find::bar_ui(ui, &mut self.doc_mut().find);
-                    if let Some(act) = find_action {
-                        match act {
-                            FindAction::JumpTo(r) => {
-                                let doc = self.doc_mut();
-                                doc.pending_selection = Some(r);
-                                doc.scroll_to_selection = true;
-                            }
-                            FindAction::ReplaceCurrent => self.replace_current(ctx),
-                            FindAction::ReplaceAll => self.replace_all(ctx),
-                            FindAction::Close => {
-                                let doc = self.doc_mut();
-                                doc.find.open = false;
-                                ctx.memory_mut(|m| m.request_focus(editor::editor_id(doc.uid)));
-                            }
-                        }
-                    }
-                }
 
                 let avail = ui.available_rect_before_wrap();
                 let render_pane = |ui: &mut egui::Ui, outer_rect: Rect, body: &mut dyn FnMut(&mut egui::Ui)| {
@@ -2898,6 +3024,32 @@ impl eframe::App for MdApp {
                     body(&mut child);
                 };
 
+                if self.doc().is_welcome {
+                    render_pane(ui, avail, &mut |ui| self.welcome_pane(ui));
+                    return;
+                }
+
+                if self.settings.mode != ViewMode::Preview {
+                    let find_action = find::bar_ui(ui, &mut self.doc_mut().find);
+                    if let Some(act) = find_action {
+                        match act {
+                            FindAction::JumpTo(r) => {
+                                let doc = self.doc_mut();
+                                doc.pending_selection = Some(r);
+                                doc.scroll_to_selection = true;
+                            }
+                            FindAction::ReplaceCurrent => self.replace_current(ctx),
+                            FindAction::ReplaceAll => self.replace_all(ctx),
+                            FindAction::Close => {
+                                let doc = self.doc_mut();
+                                doc.find.open = false;
+                                ctx.memory_mut(|m| m.request_focus(editor::editor_id(doc.uid)));
+                            }
+                        }
+                    }
+                }
+
+                let avail = ui.available_rect_before_wrap();
                 match self.settings.mode {
                     ViewMode::Edit => {
                         render_pane(ui, avail, &mut |ui| self.editor_pane(ui));

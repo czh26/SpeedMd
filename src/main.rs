@@ -26,6 +26,7 @@ mod stats;
 mod tabs;
 mod textproc;
 mod theme;
+mod welcome;
 mod window_frame;
 mod winutil;
 
