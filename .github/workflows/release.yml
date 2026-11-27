@@ -1,0 +1,159 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Release (Windows x64)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify tag matches Cargo.toml version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = $env:GITHUB_REF_NAME
+          if ([string]::IsNullOrWhiteSpace($tag) -or -not $tag.StartsWith("v")) {
+            Write-Error "Invalid tag '$tag': expected a tag starting with 'v' (e.g. v0.1.0)."
+            exit 1
+          }
+          $tagVersion = $tag.Substring(1)
+          $meta = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $pkg = $meta.packages | Where-Object { $_.name -eq "thundermd" } | Select-Object -First 1
+          if (-not $pkg) {
+            Write-Error "Package 'thundermd' not found in Cargo.toml."
+            exit 1
+          }
+          $cargoVersion = $pkg.version
+          Write-Host "Git tag: $tag (version: $tagVersion)"
+          Write-Host "Cargo.toml version: $cargoVersion"
+          if ($tagVersion -ne $cargoVersion) {
+            Write-Error "Version mismatch: Git tag '$tag' ($tagVersion) does not match Cargo.toml version '$cargoVersion'."
+            exit 1
+          }
+          "TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VERSION=$cargoVersion" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Verify static VC++ runtime linkage
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswhere) {
+            $dumpbin = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find "VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+            if ($dumpbin) {
+              $deps = & $dumpbin /dependents target/release/thundermd.exe | Out-String
+              Write-Host $deps
+              if ($deps -match '(?i)vcruntime140|msvcp140|api-ms-win-crt-') {
+                Write-Error "Unexpected dynamic VC++ runtime dependency found in thundermd.exe!"
+                exit 1
+              }
+            }
+          }
+
+      - name: Package release zip, SHA256 checksum, and release notes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+          $tag = $env:TAG
+          $zipName = "ThunderMD-$tag-windows-x86_64.zip"
+          $shaName = "$zipName.sha256"
+
+          if (Test-Path dist) {
+            Remove-Item -Recurse -Force dist
+          }
+          New-Item -ItemType Directory -Force -Path dist/stage | Out-Null
+
+          Copy-Item -Path target/release/thundermd.exe -Destination dist/stage/thundermd.exe
+          Copy-Item -Path README.md -Destination dist/stage/README.md
+          Copy-Item -Path LICENSE -Destination dist/stage/LICENSE
+
+          $distAbs = (Resolve-Path dist).Path
+          $zipAbs = Join-Path $distAbs $zipName
+          $shaAbs = Join-Path $distAbs $shaName
+          $notesAbs = Join-Path $distAbs "release-notes.md"
+
+          Compress-Archive -Path "dist/stage/*" -DestinationPath $zipAbs -Force
+
+          $archive = [System.IO.Compression.ZipFile]::OpenRead($zipAbs)
+          try {
+            $entries = $archive.Entries | ForEach-Object { $_.FullName }
+            Write-Host "Archive entries: $($entries -join ', ')"
+            if ($entries | Where-Object { $_ -match '\.(pdb|d)$' }) {
+              throw "Archive unexpectedly contains .pdb or .d files!"
+            }
+          } finally {
+            $archive.Dispose()
+          }
+
+          $hash = (Get-FileHash -Path $zipAbs -Algorithm SHA256).Hash.ToLowerInvariant()
+          $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+          [System.IO.File]::WriteAllText($shaAbs, "$hash  $zipName`n", $utf8NoBom)
+
+          $notesTemplate = @'
+          ## ✨ 核心功能亮点
+
+          - **极速原生体验**：基于 Rust + egui（OpenGL / glow 后端）打造，毫秒级冷启动与实时渲染；单文件绿色免安装，已静态链接 VC++ 运行库，零外部 DLL 依赖，解压即用。
+          - **三视图编辑与实时预览**：支持编辑、分屏、预览三种视图及源代码模式切换；内置轻量 Markdown 语法高亮、括号与围栏自动闭合、正则查找替换、交互式任务列表、剪贴板富文本转 Markdown 与图片粘贴自动落盘。
+          - **闪电启动台与多文档管理**：内置闪电启动台欢迎主页与最近文档持久化置顶记录；支持多标签页拖拽重排、会话恢复，以及文件树、文章摘要列表、章节大纲三合一侧边栏。
+          - **丰富语法与中文排版友好**：支持 CommonMark + GFM、脚注、上下标、高亮、`:emoji:` 短码、YAML/TOML Front Matter、内嵌 HTML 与音视频卡片；针对中英文混排与软换行专门优化，按 `F1` 随时打开交互式内置语法说明书。
+          - **5 套主题与高度可定制**：内置 5 套浅色 / 深色主题（支持日夜一键热切换）、自绘无边框窗口、独立字体与排版参数调优、快捷键录制自定义，以及 HTML 导入与单文件导出。
+
+          ## 💻 运行环境要求
+
+          - **操作系统**：Windows 10 / Windows 11（64 位 `x86_64`）
+          - **运行库依赖**：无（已静态链接 MSVC 运行库，无需安装 VC++ Redistributable，解压 `.zip` 后双击 `thundermd.exe` 即可运行）
+
+          ## 🔒 SHA256 校验值
+
+          ```text
+          __SHA256__  __ZIP_NAME__
+          ```
+
+          可在 PowerShell 中运行以下命令核对文件完整性：
+
+          ```powershell
+          Get-FileHash .\__ZIP_NAME__ -Algorithm SHA256
+          ```
+
+          > [!NOTE]
+          > **Windows SmartScreen 首次运行提示**：由于本程序暂未附加商业代码签名证书，首次运行 `thundermd.exe` 时若遇到 Windows SmartScreen 弹出「Windows 已保护你的电脑」拦截提示，请点击 **「更多信息」** → **「仍要运行」** 即可正常启动。
+          '@
+
+          $notes = $notesTemplate.Replace("__SHA256__", $hash).Replace("__ZIP_NAME__", $zipName)
+          [System.IO.File]::WriteAllText($notesAbs, $notes, $utf8NoBom)
+
+          "ZIP_PATH=dist/$zipName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "SHA_PATH=dist/$shaName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ThunderMD ${{ env.TAG }}
+          body_path: dist/release-notes.md
+          files: |
+            ${{ env.ZIP_PATH }}
+            ${{ env.SHA_PATH }}
+          fail_on_unmatched_files: true

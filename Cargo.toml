@@ -3,6 +3,7 @@ name = "thundermd"
 version = "0.1.0"
 edition = "2024"
 description = "极速 Markdown 编辑器（Rust + egui）"
+license = "MIT"
 repository = "https://github.com/czh26/ThunderMD"
 
 [dependencies]

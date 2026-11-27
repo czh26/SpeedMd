@@ -17,8 +17,19 @@
 ThunderMD 是一款面向 Windows 的原生桌面 Markdown 编辑器，使用 Rust（2024 edition）编写，基于 [eframe / egui](https://github.com/emilk/egui) 即时模式 GUI，并采用 OpenGL（glow）后端渲染，Markdown 解析由 [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) 完成。
 
 - **启动快**：选用 glow 而非 wgpu 后端，冷启动更快；开发构建也会对依赖做优化，调试时界面不卡顿。
-- **体积小**：发布版开启 `lto = "fat"`、`codegen-units = 1`、`panic = "abort"`、`strip = true`，产物为单个 exe，运行时不弹出控制台窗口。
+- **体积小**：发布版开启 `lto = "fat"`、`codegen-units = 1`、`panic = "abort"`、`strip = true`，并静态链接 VC++ 运行库，产物为单个免安装 exe，零外部 DLL 依赖，运行时不弹出控制台窗口。
 - **中文友好**：中文连续行软换行时不额外插入空格、英文行间自动补空格；字体扫描与中英混排度量单独处理，默认字体组合为 Segoe UI / Consolas + 微软雅黑。
+
+## 📦 下载使用（免安装绿色版）
+
+前往 [GitHub Releases](https://github.com/czh26/ThunderMD/releases) 页面下载最新版本的 `ThunderMD-v*-windows-x86_64.zip` 压缩包，解压到任意目录后直接双击 `thundermd.exe` 即可运行：
+
+- **运行环境**：Windows 10 / Windows 11（64 位 `x86_64`）
+- **免安装零依赖**：程序已静态链接 MSVC / VC++ 运行库，无需安装 Visual C++ Redistributable 或任何额外组件
+- **完整性校验（可选）**：Release 附件中同时提供同名 `.zip.sha256` 校验文件，可在 PowerShell 中运行 `Get-FileHash .\ThunderMD-v0.1.0-windows-x86_64.zip -Algorithm SHA256` 核对
+
+> [!NOTE]
+> **Windows SmartScreen 首次运行提示**：由于个人开源项目暂未附加商业代码签名证书，首次运行 `thundermd.exe` 时若遇系统弹出「Windows 已保护你的电脑」拦截提示，请点击 **「更多信息」** → **「仍要运行」** 即可正常启动。
 
 ## 🚀 功能特性
 
@@ -35,6 +46,8 @@ ThunderMD 是一款面向 Windows 的原生桌面 Markdown 编辑器，使用 Ru
 
 ### 多文档管理
 
+- **闪电启动台欢迎主页**：空会话或主动打开「欢迎主页」时展示居中聚光灯启动台，提供 2×2 核心快捷入口（新建空白文档、打开本地文件、打开工作目录、内置语法说明书，自动同步当前快捷键键帽）、首次冷启动示例文档一键生成引导与文件拖放提示条。
+- **最近文档持久化与置顶**：自动持久化记录最近打开或保存的文档（展示中文相对打开时间），支持一键**置顶 / 取消置顶**常用文档（置顶项优先排列且不被自动淘汰）、在资源管理器中定位、复制完整路径、移除单条记录及一键清空未置顶列表。
 - **多标签页**：支持拖拽重排、右键菜单、同名文件自动消歧，可重新打开刚关闭的标签。
 - **会话恢复**：启动时可恢复上次打开的标签（可在设置中关闭）。
 - **侧边栏**，包含三个面板：
@@ -127,7 +140,7 @@ ThunderMD 是一款面向 Windows 的原生桌面 Markdown 编辑器，使用 Ru
 | 快捷键设置 | `Ctrl+K` | 语法说明书 | `F1` |
 
 > [!NOTE]
-> 「导入 HTML」「导出 HTML」「导出 HTML 片段」「复制为 Markdown」以及「选择主题 01–05」默认未绑定快捷键，可按需自行设置。
+> 「欢迎主页」「导入 HTML」「导出 HTML」「导出 HTML 片段」「复制为 Markdown」以及「选择主题 01–05」默认未绑定快捷键，可按需自行设置。
 
 ## 🛠️ 构建与测试
 
@@ -182,10 +195,16 @@ cargo test
 
 ```text
 ThunderMD/
+├── .cargo/
+│   └── config.toml        # MSVC 静态链接 VC++ 运行库配置（+crt-static）
+├── .github/
+│   └── workflows/
+│       └── release.yml    # GitHub Actions 自动打包与 Release 发版工作流
 ├── assets/                # 应用图标（icon.png 运行时窗口图标 / icon.ico exe 资源图标）
 ├── build.rs               # 嵌入 Windows 图标与产品信息资源
 ├── clean-target.ps1       # target 目录旧产物清理脚本
 ├── Cargo.toml
+├── LICENSE                # MIT 开源许可证
 └── src/
     ├── main.rs            # 程序入口、窗口初始化
     ├── app.rs             # 顶层应用状态、布局与统一命令分发
@@ -214,6 +233,7 @@ ThunderMD/
     ├── tabs.rs            # 多标签页栏
     ├── stats.rs           # 字数统计
     ├── winutil.rs         # Windows 平台工具（资源管理器定位、默认程序打开、回收站）
+    ├── welcome.rs         # 闪电启动台欢迎主页与最近文档面板
     ├── manual.rs          # 语法说明书界面
     ├── manual.md          # 语法说明书数据（编译时嵌入）
     └── sidebar/           # 侧边栏：容器与文件监听、文件树、文章列表、大纲
@@ -245,3 +265,7 @@ ThunderMD/
 ## 🤝 贡献
 
 欢迎通过 [Issue](https://github.com/czh26/ThunderMD/issues) 反馈问题或提出建议。
+
+## 📄 开源协议
+
+本项目基于 [MIT License](LICENSE) 开源，Copyright (c) 2026 czh26。
